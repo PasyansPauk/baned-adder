@@ -37,9 +37,9 @@
       <section class="card" id="secVideo" aria-labelledby="hVideo">
         <h2 id="hVideo"><span class="step">1</span> Видео</h2>
         <label class="drop" id="videoDrop">
-          <input type="file" id="videoInput" accept="video/*" hidden>
+          <input type="file" id="videoInput" accept="video/*" multiple hidden>
           <span class="drop-title">Выбрать видео</span>
-          <span class="muted small">или перетащите файл сюда · MP4, MOV, WebM</span>
+          <span class="muted small">или перетащите файлы сюда · можно несколько · MP4, MOV, WebM</span>
         </label>
         <div id="videoInfo" class="media-info" hidden>
           <video id="videoPreview" playsinline muted controls preload="metadata"></video>
@@ -49,8 +49,14 @@
             <div id="uploadState" class="small"></div>
             <div class="row gap-s">
               <button type="button" class="btn btn-sm" id="videoReplace">Заменить</button>
+              <button type="button" class="btn btn-sm" id="videoAdd">Добавить ещё видео</button>
             </div>
           </div>
+        </div>
+        <input type="file" id="videoAddInput" accept="video/*" multiple hidden>
+        <div id="videoListBox" hidden>
+          <p class="muted small">Видео в работе. Каждое режется на свои части с теми же баннерами и настройками. Нажмите на видео, чтобы посмотреть его план и превью.</p>
+          <ul id="videoList" class="video-list"></ul>
         </div>
 
         <div class="link-box" id="linkBox">
@@ -409,6 +415,7 @@
         <p class="muted small" id="engineHint"></p>
         <div class="row gap-s wrap">
           <button type="button" class="btn btn-primary btn-lg" id="renderAll" disabled>Создать все части</button>
+          <button type="button" class="btn btn-primary btn-lg" id="renderEvery" hidden>Создать части всех видео</button>
           <button type="button" class="btn btn-ghost" id="renderCancel" hidden>Отменить</button>
         </div>
         <div id="renderState" class="small" aria-live="polite"></div>

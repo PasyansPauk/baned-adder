@@ -27,7 +27,8 @@ const PRESETS_KEY = 'banedAdder.presets.v1';
 const state = {
   settings: loadSettings(),
   server: null, // статус локального сервера
-  video: null, // { file, url, duration, width, height, uploadId, uploadPromise }
+  videos: [], // все загруженные видео: { id, file, url, duration, width, height, uploadId, uploadPromise, analysis, analysisNote }
+  video: null, // активное видео (его план и превью показаны)
   banners: [], // { id, file, name, kind, url, el, width, height, aspect, duration, uploadId }
   analysis: null,
   analysisCtl: null,
@@ -39,6 +40,9 @@ const state = {
   renderCtl: null,
   results: [],
 };
+
+let batchRun = null; // рендер всех видео по очереди: { cancelled }
+let replacing = false; // «Заменить» выбирает файл для активного видео
 
 const engine = new BrowserEngine({ canvas: $('stageCanvas'), video: $('workVideo') });
 
@@ -304,8 +308,7 @@ function onEngineChanged() {
   updateButtons();
 }
 
-async function ensureSourceUploaded() {
-  const v = state.video;
+async function ensureSourceUploaded(v = state.video) {
   if (!v) throw new Error('Нет видео');
   if (v.uploadId) return v.uploadId;
   if (!v.uploadPromise) {
@@ -314,18 +317,17 @@ async function ensureSourceUploaded() {
     v.uploadPromise = uploadFile(v.file, v.file.name, {
       probe: true,
       signal: ctl.signal,
-      onProgress: (p) => ($('uploadState').textContent = `Передача на компьютер: ${Math.round(p * 100)}%`),
+      onProgress: (p) => state.video === v && ($('uploadState').textContent = `Передача на компьютер: ${Math.round(p * 100)}%`),
     })
       .then((r) => {
-        if (state.video !== v) return null;
         v.uploadId = r.id;
         v.serverInfo = r.info;
-        $('uploadState').textContent = '✓ Видео на компьютере';
+        if (state.video === v) $('uploadState').textContent = '✓ Видео на компьютере';
         return r.id;
       })
       .catch((e) => {
         v.uploadPromise = null;
-        if (!isAbort(e)) $('uploadState').textContent = 'Не удалось передать: ' + e.message;
+        if (!isAbort(e) && state.video === v) $('uploadState').textContent = 'Не удалось передать: ' + e.message;
         throw e;
       });
   }
@@ -355,14 +357,36 @@ function bindDrop(label, onFiles) {
   });
 }
 
-bindDrop($('videoDrop'), (f) => loadVideo(f.find((x) => x.type.startsWith('video/')) || f[0]));
+const videoFiles = (f) => {
+  const v = f.filter((x) => x.type.startsWith('video/'));
+  return v.length ? v : f.slice(0, 1);
+};
+bindDrop($('videoDrop'), (f) => addVideos(videoFiles(f)));
+bindDrop($('secVideo'), (f) => state.videos.length && addVideos(videoFiles(f)));
 bindDrop($('bannerDrop'), (f) => addBanners(f));
-$('videoInput').addEventListener('change', (e) => e.target.files[0] && loadVideo(e.target.files[0]));
+$('videoInput').addEventListener('change', (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (!files.length) return;
+  // «Заменить» меняет активное видео на первый выбранный файл, остальные добавляются
+  if (replacing && state.video) replaceVideo(files);
+  else addVideos(files);
+  replacing = false;
+});
+$('videoAddInput').addEventListener('change', (e) => {
+  const files = [...e.target.files];
+  e.target.value = '';
+  if (files.length) addVideos(files);
+});
+$('videoAdd').addEventListener('click', () => $('videoAddInput').click());
 $('bannerInput').addEventListener('change', (e) => {
   addBanners([...e.target.files]);
   e.target.value = '';
 });
-$('videoReplace').addEventListener('click', () => $('videoInput').click());
+$('videoReplace').addEventListener('click', () => {
+  replacing = true;
+  $('videoInput').click();
+});
 
 function waitMeta(el) {
   return new Promise((res, rej) => {
@@ -372,54 +396,189 @@ function waitMeta(el) {
   });
 }
 
+let videoSeq = 0;
+
+/** Читает длительность и размер видео, не трогая активный плеер. */
+async function probeVideo(file) {
+  const url = file.remote ? file.url : URL.createObjectURL(file);
+  const el = document.createElement('video');
+  el.preload = 'metadata';
+  el.muted = true;
+  el.src = url;
+  try {
+    await waitMeta(el);
+  } catch (e) {
+    if (!file.remote) URL.revokeObjectURL(url);
+    throw new Error(`${file.name}: ${e.message}`);
+  }
+  const v = { id: ++videoSeq, file, url, duration: el.duration, width: el.videoWidth, height: el.videoHeight, analysis: null, analysisNote: '' };
+  el.removeAttribute('src');
+  el.load();
+  if (file.remote) {
+    v.uploadId = file.uploadId;
+    v.uploadPromise = Promise.resolve(file.uploadId);
+  }
+  return v;
+}
+
+function busyGuard() {
+  if (engine.busy || state.renderCtl) {
+    toast('Сначала остановите воспроизведение или рендер', true);
+    return true;
+  }
+  return false;
+}
+
 /**
- * Открывает видео в редакторе.
+ * Добавляет видео в список и открывает первое из добавленных.
  * file — File с устройства или «удалённый» источник { remote: true, name, size, url, uploadId }:
  * файл, который уже лежит на компьютере (скачан по ссылке) — его не надо загружать повторно.
  */
-async function loadVideo(file) {
-  if (!file) return false;
-  if (engine.busy || state.renderCtl) {
-    toast('Сначала остановите воспроизведение или рендер', true);
-    return false;
+async function addVideos(files) {
+  files = files.filter(Boolean);
+  if (!files.length || busyGuard()) return false;
+  const added = [];
+  for (const f of files) {
+    try {
+      added.push(await probeVideo(f));
+    } catch (e) {
+      toast(e.message, true);
+    }
+  }
+  if (!added.length) return false;
+  state.videos.push(...added);
+  if (added.length > 1) toast(`Добавлено видео: ${added.length}`);
+  await activateVideo(added[0]);
+  if (activeEngine() === 'server') for (const v of added) ensureSourceUploaded(v).catch(() => {});
+  return true;
+}
+
+/** Совместимость: открыть одно видео (например, скачанное по ссылке). */
+function loadVideo(file) {
+  return addVideos([file]);
+}
+
+async function replaceVideo(files) {
+  if (busyGuard()) return;
+  const old = state.video;
+  const at = state.videos.indexOf(old);
+  let fresh;
+  try {
+    fresh = await probeVideo(files[0]);
+  } catch (e) {
+    return toast(e.message, true);
+  }
+  state.videos.splice(at, 1, fresh);
+  disposeVideo(old);
+  state.video = null;
+  await activateVideo(fresh);
+  if (files.length > 1) await addVideos(files.slice(1));
+}
+
+function disposeVideo(v) {
+  v.uploadCtl?.abort();
+  if (!v.file.remote) URL.revokeObjectURL(v.url);
+  // скачанное по ссылке не удаляем: его ещё можно сохранить в Загрузки (сервер сам почистит позже)
+  if (v.uploadId && !v.file.remote) fetch(`api/uploads/${v.uploadId}`, { method: 'DELETE' }).catch(() => {});
+  const keep = state.results.filter((r) => r.videoId !== v.id);
+  for (const r of state.results) if (r.videoId === v.id && r.objectUrl) URL.revokeObjectURL(r.objectUrl);
+  state.results = keep;
+  renderResults();
+}
+
+async function removeVideo(v) {
+  if (busyGuard()) return;
+  const at = state.videos.indexOf(v);
+  if (at < 0) return;
+  state.videos.splice(at, 1);
+  disposeVideo(v);
+  if (state.video === v) {
+    state.video = null;
+    const next = state.videos[Math.min(at, state.videos.length - 1)];
+    if (next) await activateVideo(next);
+    else resetVideoUi();
+  } else renderVideoList();
+}
+
+function resetVideoUi() {
+  stopAnalysis();
+  state.analysis = null;
+  state.plan = null;
+  $('workVideo').removeAttribute('src');
+  $('videoPreview').removeAttribute('src');
+  $('videoDrop').hidden = false;
+  $('videoInfo').hidden = true;
+  $('stageEmpty').hidden = false;
+  $('analysisState').textContent = '';
+  renderVideoList();
+  rebuildPlan();
+}
+
+/** Делает видео активным: превью, анализ и план показываются для него. */
+async function activateVideo(v) {
+  if (!v) return false;
+  if (state.video === v) {
+    renderVideoList();
+    return true;
   }
   stopAnalysis();
-  const old = state.video;
-  if (old) {
-    old.uploadCtl?.abort();
-    if (!old.file.remote) URL.revokeObjectURL(old.url);
-    // скачанное по ссылке не удаляем: его ещё можно сохранить в Загрузки (сервер сам почистит позже)
-    if (old.uploadId && !old.file.remote) fetch(`api/uploads/${old.uploadId}`, { method: 'DELETE' }).catch(() => {});
-  }
-  const url = file.remote ? file.url : URL.createObjectURL(file);
+  state.video = v;
   const work = $('workVideo');
-  work.src = url;
-  $('videoPreview').src = url;
+  work.src = v.url;
+  $('videoPreview').src = v.url;
   try {
     await waitMeta(work);
   } catch (e) {
     toast(e.message, true);
     return false;
   }
-  state.video = { file, url, duration: work.duration, width: work.videoWidth, height: work.videoHeight };
-  if (file.remote) {
-    state.video.uploadId = file.uploadId;
-    state.video.uploadPromise = Promise.resolve(file.uploadId);
-  }
-  state.analysis = null;
+  if (state.video !== v) return false;
+  state.analysis = v.analysis;
   state.selected = 0;
-  clearResults();
   $('videoDrop').hidden = true;
   $('videoInfo').hidden = false;
-  $('videoName').textContent = file.name;
-  $('videoMeta').textContent = `${fmtTime(work.duration)} · ${work.videoWidth}×${work.videoHeight} · ${fmtSize(file.size)}`;
-  $('uploadState').textContent = file.remote ? '✓ Скачано по ссылке, видео на компьютере' : '';
+  $('videoName').textContent = v.file.name;
+  $('videoMeta').textContent = `${fmtTime(v.duration)} · ${v.width}×${v.height} · ${fmtSize(v.file.size)}`;
+  $('uploadState').textContent = v.uploadId ? (v.file.remote ? '✓ Скачано по ссылке, видео на компьютере' : '✓ Видео на компьютере') : '';
   $('stageEmpty').hidden = true;
-  await seekTo(work, Math.min(1, work.duration / 2));
+  renderVideoList();
+  await seekTo(work, Math.min(1, v.duration / 2));
   schedulePlan(0);
-  if (activeEngine() === 'server') ensureSourceUploaded().catch(() => {});
-  startAnalysis();
+  if (activeEngine() === 'server') ensureSourceUploaded(v).catch(() => {});
+  if (v.analysis) $('analysisState').textContent = v.analysisNote;
+  else startAnalysis();
   return true;
+}
+
+function renderVideoList() {
+  const ul = $('videoList');
+  ul.innerHTML = '';
+  $('videoListBox').hidden = state.videos.length < 2;
+  $('renderEvery').hidden = state.videos.length < 2;
+  $('renderEvery').textContent = `Создать части всех видео (${state.videos.length})`;
+  state.videos.forEach((v, i) => {
+    const li = document.createElement('li');
+    li.className = 'video-item' + (v === state.video ? ' is-active' : '');
+    li.tabIndex = 0;
+    li.setAttribute('aria-current', v === state.video ? 'true' : 'false');
+    const done = state.results.filter((r) => r.videoId === v.id).length;
+    li.innerHTML = `<span class="num">${i + 1}</span><div class="grow"><div class="ellipsis">${esc(v.file.name)}</div>
+      <div class="muted small">${fmtTime(v.duration)} · ${v.width}×${v.height}${done ? ` · готово частей: ${done}` : ''}</div></div>
+      <button type="button" class="btn btn-sm btn-ghost" aria-label="Убрать видео ${esc(v.file.name)}">Убрать</button>`;
+    li.querySelector('button').addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeVideo(v);
+    });
+    const open = () => !busyGuard() && activateVideo(v);
+    li.addEventListener('click', open);
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        open();
+      }
+    });
+    ul.appendChild(li);
+  });
 }
 
 // ------------------------------------------------------------ скачивание по ссылке
@@ -634,9 +793,15 @@ function stopAnalysis() {
   state.analysisCtl = null;
 }
 
-async function startAnalysis() {
-  if (!state.video) return;
+function startAnalysis() {
+  if (!state.video) return Promise.resolve();
   stopAnalysis();
+  const p = runAnalysis();
+  state.video.analysisPromise = p;
+  return p;
+}
+
+async function runAnalysis() {
   const ctl = new AbortController();
   state.analysisCtl = ctl;
   const v = state.video;
@@ -669,11 +834,14 @@ async function startAnalysis() {
         },
       });
     }
+    v.analysis = result;
+    v.analysisNote = `Найдено пауз: ${result.silences.length}, смен сцен: ${result.scenes.length}.` + (result.note ? ` ${result.note}` : '');
     if (state.video !== v) return;
     state.analysis = result;
-    st.textContent = `Найдено пауз: ${result.silences.length}, смен сцен: ${result.scenes.length}.` + (result.note ? ` ${result.note}` : '');
+    st.textContent = v.analysisNote;
     schedulePlan(0);
   } catch (e) {
+    if (state.video !== v) return;
     if (isAbort(e)) st.textContent = 'Анализ отменён — нарезка по ровному времени.';
     else st.textContent = 'Анализ не удался: ' + e.message + ' Нарезка по ровному времени.';
   } finally {
@@ -856,7 +1024,8 @@ function updateButtons() {
   const rendering = !!state.renderCtl;
   $('previewPlay').disabled = !hasPlan || rendering;
   $('previewAd').disabled = !hasPlan || rendering || !state.plan?.parts[state.selected]?.ads.length;
-  $('renderAll').disabled = !hasPlan || rendering;
+  $('renderAll').disabled = !hasPlan || rendering || !!batchRun;
+  $('renderEvery').disabled = !state.videos.length || rendering || !!batchRun;
   $('analyzeBtn').disabled = !state.video || !!state.analysisCtl || rendering;
   document.querySelectorAll('[data-act="render"]').forEach((b) => (b.disabled = rendering));
 }
@@ -868,29 +1037,28 @@ function fileNameFor(part) {
   return sanitizeFileName(fillTemplate(state.settings.output.fileName, { name: base, n: part.index + 1, total: part.total }), `part${part.index + 1}`);
 }
 
-function clearResults() {
-  for (const r of state.results) if (r.objectUrl) URL.revokeObjectURL(r.objectUrl);
-  state.results = [];
-  $('results').innerHTML = '';
-  $('downloadAllRow').hidden = true;
+function addResult(r) {
+  const v = state.video;
+  r.videoId = v?.id;
+  state.results = state.results.filter((x) => !(x.videoId === r.videoId && x.index === r.index));
+  state.results.push(r);
+  renderResults();
+  renderVideoList();
 }
 
-function addResult(r) {
-  state.results = state.results.filter((x) => x.index !== r.index);
-  state.results.push(r);
-  state.results.sort((a, b) => a.index - b.index);
-  renderResults();
-}
+const videoNo = (r) => state.videos.findIndex((v) => v.id === r.videoId) + 1;
 
 function renderResults() {
   const ul = $('results');
   ul.innerHTML = '';
+  state.results.sort((a, b) => videoNo(a) - videoNo(b) || a.index - b.index);
   for (const r of state.results) {
     const li = document.createElement('li');
     li.className = 'result-item';
     const href = r.objectUrl || r.url;
     const dl = r.objectUrl ? href : `${href}?download=1`;
-    li.innerHTML = `<div class="grow"><b>Часть ${r.index + 1}</b> <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)}</span></div>
+    const multi = state.videos.length > 1;
+    li.innerHTML = `<div class="grow"><b>${multi ? `Видео ${videoNo(r)} · ` : ''}Часть ${r.index + 1}</b> <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)}</span></div>
       <div class="row gap-s wrap">
         <button type="button" class="btn btn-sm" data-act="watch">Смотреть</button>
         <a class="btn btn-sm" href="${dl}" download="${esc(r.name)}">Скачать</a>
@@ -957,7 +1125,38 @@ $('renderAll').addEventListener('click', () => {
   engine.unlockAudio();
   renderParts(state.plan.parts);
 });
+$('renderEvery').addEventListener('click', async () => {
+  if (state.renderCtl || batchRun) return;
+  engine.unlockAudio();
+  const run = { cancelled: false };
+  batchRun = run;
+  const list = [...state.videos];
+  let ok = 0;
+  try {
+    for (const [i, v] of list.entries()) {
+      if (run.cancelled || !state.videos.includes(v)) continue;
+      $('renderState').textContent = `Видео ${i + 1} из ${list.length}: ${v.file.name} — готовлю план…`;
+      if (!(await activateVideo(v))) continue;
+      // ждём поиск пауз, чтобы части резались по паузам, как при ручном рендере
+      await v.analysisPromise?.catch(() => {});
+      if (run.cancelled) break;
+      clearTimeout(planTimer);
+      rebuildPlan();
+      if (!state.plan?.parts?.length) continue;
+      if (await renderParts(state.plan.parts, { batch: run })) ok++;
+    }
+    $('renderState').textContent = run.cancelled
+      ? `Рендер отменён. Готово видео: ${ok} из ${list.length}.`
+      : `Готово: части для ${ok} из ${list.length} видео.`;
+    if (!run.cancelled) toast('Все видео готовы');
+  } finally {
+    batchRun = null;
+    updateButtons();
+  }
+});
+
 $('renderCancel').addEventListener('click', () => {
+  if (batchRun) batchRun.cancelled = true;
   state.renderCtl?.abort();
   engine.stop();
 });
@@ -980,8 +1179,8 @@ function beforeUnload(e) {
   e.returnValue = '';
 }
 
-async function renderParts(parts) {
-  if (!parts?.length || state.renderCtl) return;
+async function renderParts(parts, { batch = null } = {}) {
+  if (!parts?.length || state.renderCtl) return false;
   engine.unlockAudio();
   if (engine.busy) {
     engine.stop();
@@ -1001,10 +1200,13 @@ async function renderParts(parts) {
     else await renderInBrowser(parts, ctl, st, bar);
     const sec = Math.round((performance.now() - t0) / 1000);
     st.textContent = `Готово: ${parts.length} ${parts.length === 1 ? 'часть' : 'частей'} за ${fmtTime(sec)}.`;
-    toast('Видео готовы');
+    if (!batch) toast('Видео готовы');
+    return true;
   } catch (e) {
     st.textContent = isAbort(e) ? 'Рендер отменён.' : 'Ошибка: ' + e.message;
+    if (isAbort(e) && batch) batch.cancelled = true;
     if (!isAbort(e)) toast('Рендер не удался', true);
+    return false;
   } finally {
     state.renderCtl = null;
     window.removeEventListener('beforeunload', beforeUnload);
@@ -1014,6 +1216,10 @@ async function renderParts(parts) {
     updateButtons();
     drawStill();
   }
+}
+
+function batchPrefix() {
+  return batchRun ? `Видео ${state.videos.indexOf(state.video) + 1} из ${state.videos.length} · ` : '';
 }
 
 async function renderOnServer(parts, ctl, st, bar) {
@@ -1042,7 +1248,7 @@ async function renderOnServer(parts, ctl, st, bar) {
     jobId,
     (job) => {
       setProgress(bar, job.progress);
-      if (job.status === 'running') st.textContent = `${job.message || 'Рендер'} · ${Math.round(job.progress * 100)}%`;
+      if (job.status === 'running') st.textContent = `${batchPrefix()}${job.message || 'Рендер'} · ${Math.round(job.progress * 100)}%`;
       else if (job.status === 'queued') st.textContent = 'В очереди…';
       for (const r of job.results) {
         if (seen.has(r.name)) continue;
@@ -1062,7 +1268,7 @@ async function renderInBrowser(parts, ctl, st, bar) {
   for (const [k, part] of parts.entries()) {
     if (ctl.signal.aborted) throw new DOMException('Отменено', 'AbortError');
     selectPart(part.index, { still: false });
-    st.textContent = `Запись части ${part.index + 1} (${k + 1} из ${parts.length}) — не блокируйте экран`;
+    st.textContent = `${batchPrefix()}Запись части ${part.index + 1} (${k + 1} из ${parts.length}) — не блокируйте экран`;
     const blob = await engine.play(part, {
       record: true,
       monitor: state.settings.output.monitorAudio,
