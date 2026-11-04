@@ -53,12 +53,12 @@ const FORMAT =
 
 function friendlyError(stderr) {
   const s = stderr || '';
-  if (/Sign in to confirm|not a bot/i.test(s)) return 'YouTube просит подтвердить, что вы не робот. Обновите yt-dlp (brew upgrade yt-dlp) и попробуйте ещё раз.';
+  if (/Sign in to confirm|not a bot/i.test(s)) return 'YouTube просит подтвердить, что вы не робот. Обновите yt-dlp (yt-dlp -U или brew upgrade yt-dlp) и попробуйте ещё раз.';
   if (/Private video|private/i.test(s) && /video/i.test(s)) return 'Видео закрыто (приватное) — скачать нельзя.';
   if (/age|confirm your age/i.test(s) && /restricted|inappropriate|age-restricted/i.test(s)) return 'Видео с ограничением по возрасту — без входа в аккаунт скачать нельзя.';
   if (/Video unavailable|not available|removed|This video has been removed/i.test(s)) return 'Видео недоступно (удалено или заблокировано в вашей стране).';
   if (/is live|live event|premieres in/i.test(s)) return 'Это прямая трансляция или премьера — дождитесь окончания.';
-  if (/HTTP Error 403|Forbidden/i.test(s)) return 'Сайт не отдал видео (ошибка 403). Обычно помогает обновить yt-dlp: brew upgrade yt-dlp';
+  if (/HTTP Error 403|Forbidden/i.test(s)) return 'Сайт не отдал видео (ошибка 403). Обычно помогает обновить yt-dlp: yt-dlp -U или brew upgrade yt-dlp';
   if (/HTTP Error 429|Too Many Requests/i.test(s)) return 'Слишком много запросов — сайт временно ограничил скачивание. Попробуйте через несколько минут.';
   if (/Unable to resolve|getaddrinfo|Network is unreachable|timed out/i.test(s)) return 'Нет интернета на компьютере или сайт не отвечает.';
   if (/Unsupported URL/i.test(s)) return 'По этой ссылке нет видео. Откройте видео и скопируйте ссылку ещё раз.';
@@ -86,7 +86,7 @@ function runYtDlp(args, onLine, signal) {
       stderr = (stderr + d).slice(-8000);
       handle(String(d));
     });
-    p.on('error', (e) => reject(e.code === 'ENOENT' ? new Error('yt-dlp не найден. Установите: brew install yt-dlp') : e));
+    p.on('error', (e) => reject(e.code === 'ENOENT' ? new Error('yt-dlp не найден. Установка описана в README') : e));
     p.on('close', (code) => {
       if (buf) {
         lines.push(buf);

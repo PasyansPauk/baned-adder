@@ -15,20 +15,45 @@
 
 ## Быстрый старт на Mac
 
-1. Один раз установите [Homebrew](https://brew.sh), затем в Терминале:
+Работает на **Apple Silicon (M1–M4)** и на **Intel**, включая хакинтош. Выберите один способ установки `node`, `ffmpeg` и `yt-dlp` (`yt-dlp` нужен только для скачивания по ссылкам, без него всё остальное работает).
+
+**Способ A. Homebrew** (проще всего на Apple Silicon):
+```bash
+brew install node ffmpeg yt-dlp
+```
+> На Intel Homebrew больше не собирает готовые пакеты (bottles) и пытается скомпилировать всё из исходников, включая `llvm` и `rust`. Это занимает часы, комп при этом сильно шумит. Если видите `./bootstrap` / `make` для `cmake` или `llvm`, нажмите `Ctrl+C` и используйте способ B или C.
+
+**Способ B. Готовые файлы** (без компиляции, подходит для Intel и Apple Silicon):
+1. Node.js: установщик `.pkg` с [nodejs.org](https://nodejs.org). Он универсальный.
+2. yt-dlp: один готовый файл, работает на обоих процессорах.
    ```bash
-   brew install node ffmpeg yt-dlp
+   sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /usr/local/bin/yt-dlp
+   sudo chmod a+rx /usr/local/bin/yt-dlp
    ```
-   `yt-dlp` нужен только для скачивания по ссылкам YouTube и TikTok, без него всё остальное работает.
-2. Скачайте проект (`Code → Download ZIP` или `git clone`) и запустите:
+3. ffmpeg: статические сборки с [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/) (`ffmpeg` и `ffprobe`) для Intel или [osxexperts.net](https://www.osxexperts.net) для Apple Silicon. Положите оба файла в `/usr/local/bin` и снимите карантин:
+   ```bash
+   sudo xattr -d com.apple.quarantine /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+   ```
+
+**Способ C. MacPorts** (есть готовые пакеты для Intel и Apple Silicon): после установки [MacPorts](https://www.macports.org)
+```bash
+sudo port install nodejs22 ffmpeg yt-dlp
+```
+
+Приложение само находит программы в папках Homebrew (`/opt/homebrew/bin` на Apple Silicon, `/usr/local/bin` на Intel, `~/.brew/bin`), MacPorts (`/opt/local/bin`) и в `PATH`. Если они лежат в другом месте, задайте пути переменными `FFMPEG_PATH`, `FFPROBE_PATH`, `YTDLP_PATH`.
+
+**Запуск:**
+1. Скачайте проект (`Code → Download ZIP` или `git clone`) и выполните:
    ```bash
    cd baned-adder
    npm start
    ```
    Можно и без Терминала: двойной клик по `start.command` в Finder (при первом запуске: правый клик → «Открыть»).
-3. Откройте **http://localhost:8787** в Safari или Chrome.
+2. Откройте **http://localhost:8787** в Safari или Chrome.
 
 `npm install` не нужен: у проекта нет зависимостей, только встроенные модули Node.js.
+
+Быстрее всего рендер идёт на Apple Silicon и на Mac с аппаратным кодированием: приложение само включает **VideoToolbox**, если ваш ffmpeg его поддерживает (сборка с evermeet.cx поддерживает). На Intel без него используется программный x264: он медленнее, но результат тот же.
 
 ## На iPhone
 
@@ -72,14 +97,14 @@
 
 > Скачивайте только видео, на которые у вас есть права: свои ролики или с разрешения автора. Перезалив чужого контента нарушает авторские права и правила площадок.
 
-YouTube регулярно меняет защиту. Если скачивание вдруг перестало работать, обновите yt-dlp: `brew upgrade yt-dlp`. Для YouTube новым версиям yt-dlp нужен JavaScript-движок; приложение само передаёт yt-dlp ваш Node.js, ничего дополнительно ставить не нужно.
+YouTube регулярно меняет защиту. Если скачивание вдруг перестало работать, обновите yt-dlp (`brew upgrade yt-dlp`, `sudo port upgrade yt-dlp` или `yt-dlp -U` для готового файла). Для YouTube новым версиям yt-dlp нужен JavaScript-движок; приложение само передаёт yt-dlp ваш Node.js, ничего дополнительно ставить не нужно.
 
 ## Два движка обработки
 
 | | Компьютер (ffmpeg) | Браузер |
 |---|---|---|
 | Где работает | Mac с запущенным `npm start`; с iPhone через Wi-Fi | любой современный браузер, в том числе iPhone без Mac |
-| Скорость | быстрее реального времени (на Apple Silicon с VideoToolbox — в разы) | в реальном времени |
+| Скорость | быстрее реального времени (с аппаратным VideoToolbox на Apple Silicon и многих Intel Mac — в разы) | в реальном времени |
 | Качество | H.264 MP4, x264 или аппаратный VideoToolbox | MP4 в Safari и новом Chrome, иначе WebM |
 | Анализ пауз и сцен | ffmpeg (быстро) | Web Audio + покадровое сравнение |
 

@@ -6,12 +6,20 @@ import { LoudnessMeter, detectSilences } from '../public/js/core/audio.js';
 import { buildFfmpegArgs, encoderArgs } from './ffmpeg-graph.js';
 
 /**
- * Полный путь к программе. Кроме PATH смотрим папки Homebrew: при запуске двойным кликом
+ * Полный путь к программе. Кроме PATH смотрим папки Homebrew (Apple Silicon и Intel), MacPorts и ~/.brew: при запуске двойным кликом
  * (start.command) PATH бывает урезанным, и brew-программы иначе «не находятся».
  */
 export function findBinary(name) {
   if (name.includes('/') || name.includes('\\')) return name;
-  const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
+  const home = process.env.HOME || '';
+  const dirs = [
+    ...(process.env.PATH || '').split(path.delimiter),
+    '/opt/homebrew/bin', // Homebrew на Apple Silicon
+    '/usr/local/bin', // Homebrew на Intel, ручная установка
+    '/opt/local/bin', // MacPorts
+    ...(home ? [path.join(home, '.brew/bin'), path.join(home, 'bin')] : []), // brew в домашней папке
+    '/usr/bin',
+  ];
   const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
   for (const d of dirs) {
     if (!d) continue;
