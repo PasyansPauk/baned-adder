@@ -74,10 +74,26 @@ export function buildFfmpegArgs(spec, io) {
   // --- видео: нормализация и сегменты
   const K = segs.length;
   const vNames = segs.map((_, i) => `s${i}`);
-  filters.push(
-    `[0:v]setpts=PTS-STARTPTS,fps=${fps},${fitChain(spec.fit, W, H)},setsar=1,format=yuv420p` +
-      (K > 1 ? `,split=${K}${vNames.map((v) => `[${v}]`).join('')}` : `[${vNames[0]}]`)
-  );
+  const splitTail = K > 1 ? `,split=${K}${vNames.map((v) => `[${v}]`).join('')}` : `[${vNames[0]}]`;
+  if (spec.chroma) {
+    // хромакей: вырезаем цвет, вписываем ролик и кладём на сплошной фон
+    const c = spec.chroma;
+    const key = /^#[0-9a-f]{6}$/i.test(c.color || '') ? '0x' + c.color.slice(1) : '0x00ff00';
+    const bg = /^#[0-9a-f]{6}$/i.test(c.bg || '') ? '0x' + c.bg.slice(1) : '0x000000';
+    const sim = Math.min(0.5, Math.max(0.01, (Number(c.similarity) || 30) / 200));
+    const blend = Math.min(0.5, Math.max(0, (Number(c.smooth) || 0) / 200));
+    const scaleFg =
+      spec.fit === 'crop'
+        ? `scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H}`
+        : `scale=${W}:${H}:force_original_aspect_ratio=decrease`;
+    filters.push(`color=c=${bg}:s=${W}x${H}:r=${fps}:d=${n3(len + 1)},format=yuv420p[ckbg]`);
+    filters.push(
+      `[0:v]setpts=PTS-STARTPTS,fps=${fps},chromakey=color=${key}:similarity=${n3(sim)}:blend=${n3(blend)},format=yuva420p,${scaleFg},setsar=1[ckfg]`
+    );
+    filters.push(`[ckbg][ckfg]overlay=(W-w)/2:(H-h)/2:shortest=1:format=auto,setsar=1,format=yuv420p${splitTail}`);
+  } else {
+    filters.push(`[0:v]setpts=PTS-STARTPTS,fps=${fps},${fitChain(spec.fit, W, H)},setsar=1,format=yuv420p${splitTail}`);
+  }
   const A_FMT = 'aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
   const aNames = segs.map((_, i) => `as${i}`);
   const contentCount = segs.filter((s) => s.type === 'content').length;

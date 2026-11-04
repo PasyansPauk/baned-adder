@@ -78,3 +78,17 @@ test('ffmpeg: команда собирается и не содержит ли�
   assert.equal(args.at(-1), 'out.mp4');
   assert.throws(() => buildFfmpegArgs({ W: 'x', H: 2, duration: 1, srcStart: 0, srcEnd: 1, segments: [{}] }, {}));
 });
+
+test('ffmpeg: хромакей добавляет фильтр chromakey и фон', () => {
+  const spec = {
+    W: 1080, H: 1920, fps: 30, fit: 'blur', srcStart: 0, srcEnd: 60, duration: 60,
+    chroma: { color: '#00ff00', bg: '#000000', similarity: 30, smooth: 10 },
+    segments: [{ type: 'content', start: 0, end: 60 }],
+  };
+  const io = { src: 'in.mp4', output: 'out.mp4', resolve: (x) => x, srcHasAudio: true, adHasAudio: () => false, encoder: 'x264', quality: 'high' };
+  const g = buildFfmpegArgs(spec, io)[buildFfmpegArgs(spec, io).indexOf('-filter_complex') + 1];
+  assert.match(g, /chromakey=color=0x00ff00/);
+  assert.match(g, /overlay=\(W-w\)\/2:\(H-h\)\/2:shortest=1/);
+  const plain = buildFfmpegArgs({ ...spec, chroma: null }, io).join(' ');
+  assert.doesNotMatch(plain, /chromakey/);
+});
