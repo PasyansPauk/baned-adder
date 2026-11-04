@@ -47,6 +47,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
     endCard: true,
     endCardText: 'Продолжение в части {next} →',
     endCardDur: 3,
+    chroma: {
+      enabled: false, // убрать однотонный фон (зелёный экран) из ролика
+      color: '#00ff00', // цвет, который вырезаем
+      similarity: 30, // насколько близкие оттенки вырезать, 1–100
+      smooth: 10, // мягкость края, 0–100
+      bg: '#000000', // что показать вместо вырезанного фона
+    },
   },
   output: {
     fileName: '{name}_part{n}',
@@ -117,6 +124,13 @@ export function normalizeSettings(input) {
       endCard: bool(s.look.endCard, d.look.endCard),
       endCardText: str(s.look.endCardText, d.look.endCardText, 80),
       endCardDur: num(s.look.endCardDur, 1, 30, d.look.endCardDur),
+      chroma: {
+        enabled: bool(s.look.chroma?.enabled, d.look.chroma.enabled),
+        color: safeHexColor(s.look.chroma?.color, d.look.chroma.color),
+        similarity: num(s.look.chroma?.similarity, 1, 100, d.look.chroma.similarity),
+        smooth: num(s.look.chroma?.smooth, 0, 100, d.look.chroma.smooth),
+        bg: safeHexColor(s.look.chroma?.bg, d.look.chroma.bg),
+      },
     },
     output: {
       fileName: str(s.output.fileName, d.output.fileName, 120),

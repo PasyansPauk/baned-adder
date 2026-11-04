@@ -57,6 +57,7 @@ export class BrowserEngine {
     this.small = document.createElement('canvas');
     this.freeze = document.createElement('canvas');
     this.tmp = document.createElement('canvas');
+    this.key = document.createElement('canvas');
     this.audio = null;
     this.running = null;
   }
@@ -109,11 +110,59 @@ export class BrowserEngine {
     this.freeze.height = H;
   }
 
+  /** Хромакей: вырезаем цвет по расстоянию в плоскости Cb/Cr (как ffmpeg chromakey), кладём на сплошной фон. */
+  drawKeyed(ctx, sw, sh) {
+    const { W, H, video } = this;
+    const c = this.s.look.chroma;
+    const r = fitRect(this.s.look.fit === 'crop' ? 'crop' : 'pad', sw, sh, W, H);
+    ctx.fillStyle = c.bg;
+    ctx.fillRect(0, 0, W, H);
+    const kw = Math.max(2, Math.round(r.w));
+    const kh = Math.max(2, Math.round(r.h));
+    if (this.key.width !== kw || this.key.height !== kh) {
+      this.key.width = kw;
+      this.key.height = kh;
+      this.keyCtx = this.key.getContext('2d', { willReadFrequently: true });
+    }
+    const kctx = this.keyCtx || (this.keyCtx = this.key.getContext('2d', { willReadFrequently: true }));
+    kctx.drawImage(video, 0, 0, kw, kh);
+    const img = kctx.getImageData(0, 0, kw, kh);
+    const d = img.data;
+    const cb = (R, G, B) => -0.168736 * R - 0.331264 * G + 0.5 * B;
+    const cr = (R, G, B) => 0.5 * R - 0.418688 * G - 0.081312 * B;
+    const kr = parseInt(c.color.slice(1, 3), 16);
+    const kg = parseInt(c.color.slice(3, 5), 16);
+    const kb = parseInt(c.color.slice(5, 7), 16);
+    const kcb = cb(kr, kg, kb);
+    const kcr = cr(kr, kg, kb);
+    const sim = Math.min(0.5, Math.max(0.01, c.similarity / 200));
+    const blend = Math.min(0.5, Math.max(0, c.smooth / 200));
+    const norm = 255 * Math.SQRT2;
+    for (let i = 0; i < d.length; i += 4) {
+      const R = d[i];
+      const G = d[i + 1];
+      const B = d[i + 2];
+      const dcb = cb(R, G, B) - kcb;
+      const dcr = cr(R, G, B) - kcr;
+      const diff = Math.sqrt(dcb * dcb + dcr * dcr) / norm;
+      const a = blend > 0.0001 ? Math.min(1, Math.max(0, (diff - sim) / blend)) : diff > sim ? 1 : 0;
+      d[i + 3] = Math.round(a * 255);
+    }
+    kctx.putImageData(img, 0, 0);
+    ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
+  }
+
   drawContent(ctx = this.ctx) {
     const { W, H, video } = this;
     const fit = this.s.look.fit;
     const sw = video.videoWidth || this.srcW;
     const sh = video.videoHeight || this.srcH;
+    if (this.s.look.chroma?.enabled) {
+      ctx.save();
+      this.drawKeyed(ctx, sw, sh);
+      ctx.restore();
+      return;
+    }
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.imageSmoothingEnabled = true;

@@ -107,6 +107,7 @@ export async function buildServerSpecs(plan, parts, { factory, banners, W, H, se
       H,
       fps: settings.look.fps,
       fit: settings.look.fit,
+      chroma: settings.look.chroma.enabled ? { ...settings.look.chroma } : null,
       accent: settings.look.accent,
       srcStart: part.srcStart,
       srcEnd: part.srcEnd,
