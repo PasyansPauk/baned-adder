@@ -13,47 +13,76 @@
 
 ---
 
-## Быстрый старт на Mac
+## Установка на Mac (Intel и Apple Silicon)
 
-Работает на **Apple Silicon (M1–M4)** и на **Intel**, включая хакинтош. Выберите один способ установки `node`, `ffmpeg` и `yt-dlp` (`yt-dlp` нужен только для скачивания по ссылкам, без него всё остальное работает).
+Откройте **Терминал** и вводите команды по порядку. Выберите **один** путь: A или B.
 
-**Способ A. Homebrew** (проще всего на Apple Silicon):
+### Путь A. Без Homebrew (работает везде, рекомендуется для Intel / хакинтоша)
+
+**1. Node.js.** Скачайте и установите `.pkg` с https://nodejs.org (кнопка LTS). Проверка:
+```bash
+node -v
+```
+
+**2. yt-dlp** (нужен только для скачивания по ссылкам):
+```bash
+sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /usr/local/bin/yt-dlp
+```
+```bash
+sudo chmod a+rx /usr/local/bin/yt-dlp
+```
+
+**3. ffmpeg.** Скачайте два файла `ffmpeg` и `ffprobe` (zip) и положите их в `/usr/local/bin`:
+- Intel: https://evermeet.cx/ffmpeg/
+- Apple Silicon: https://www.osxexperts.net
+
+Затем снимите карантин:
+```bash
+sudo xattr -d com.apple.quarantine /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
+```
+Проверка:
+```bash
+ffmpeg -version
+```
+
+### Путь B. Homebrew (удобно на Apple Silicon)
+
 ```bash
 brew install node ffmpeg yt-dlp
 ```
-> На Intel Homebrew больше не собирает готовые пакеты (bottles) и пытается скомпилировать всё из исходников, включая `llvm` и `rust`. Это занимает часы, комп при этом сильно шумит. Если видите `./bootstrap` / `make` для `cmake` или `llvm`, нажмите `Ctrl+C` и используйте способ B или C.
+> На Intel brew не собирает готовые пакеты и начнёт компилировать `cmake`, `llvm`, `rust` часами (в Терминале видно `./bootstrap` и `make`). Если так, нажмите `Ctrl+C` и используйте путь A.
 
-**Способ B. Готовые файлы** (без компиляции, подходит для Intel и Apple Silicon):
-1. Node.js: установщик `.pkg` с [nodejs.org](https://nodejs.org). Он универсальный.
-2. yt-dlp: один готовый файл, работает на обоих процессорах.
-   ```bash
-   sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o /usr/local/bin/yt-dlp
-   sudo chmod a+rx /usr/local/bin/yt-dlp
-   ```
-3. ffmpeg: статические сборки с [evermeet.cx/ffmpeg](https://evermeet.cx/ffmpeg/) (`ffmpeg` и `ffprobe`) для Intel или [osxexperts.net](https://www.osxexperts.net) для Apple Silicon. Положите оба файла в `/usr/local/bin` и снимите карантин:
-   ```bash
-   sudo xattr -d com.apple.quarantine /usr/local/bin/ffmpeg /usr/local/bin/ffprobe
-   ```
-
-**Способ C. MacPorts** (есть готовые пакеты для Intel и Apple Silicon): после установки [MacPorts](https://www.macports.org)
+Вместо Homebrew можно взять [MacPorts](https://www.macports.org) (есть готовые пакеты для Intel):
 ```bash
 sudo port install nodejs22 ffmpeg yt-dlp
 ```
 
-Приложение само находит программы в папках Homebrew (`/opt/homebrew/bin` на Apple Silicon, `/usr/local/bin` на Intel, `~/.brew/bin`), MacPorts (`/opt/local/bin`) и в `PATH`. Если они лежат в другом месте, задайте пути переменными `FFMPEG_PATH`, `FFPROBE_PATH`, `YTDLP_PATH`.
+### Запуск
 
-**Запуск:**
-1. Скачайте проект (`Code → Download ZIP` или `git clone`) и выполните:
-   ```bash
-   cd baned-adder
-   npm start
-   ```
-   Можно и без Терминала: двойной клик по `start.command` в Finder (при первом запуске: правый клик → «Открыть»).
-2. Откройте **http://localhost:8787** в Safari или Chrome.
+```bash
+git clone https://github.com/pasyanspauk/baned-adder.git
+```
+```bash
+cd baned-adder
+```
+```bash
+npm start
+```
+Откройте **http://localhost:8787** в Safari или Chrome.
 
-`npm install` не нужен: у проекта нет зависимостей, только встроенные модули Node.js.
+Без Терминала: двойной клик по `start.command` в Finder (в первый раз правый клик → «Открыть»). Скачать проект можно и через `Code → Download ZIP`.
 
-Быстрее всего рендер идёт на Apple Silicon и на Mac с аппаратным кодированием: приложение само включает **VideoToolbox**, если ваш ffmpeg его поддерживает (сборка с evermeet.cx поддерживает). На Intel без него используется программный x264: он медленнее, но результат тот же.
+`npm install` не нужен: зависимостей нет.
+
+### Обновление и проблемы
+
+| Что нужно | Команда |
+|---|---|
+| Обновить yt-dlp (если YouTube/TikTok перестали качаться) | `yt-dlp -U` (или `brew upgrade yt-dlp`) |
+| Запустить на другом порту | `PORT=9000 npm start` |
+| ffmpeg лежит в нестандартной папке | `FFMPEG_PATH=/путь/ffmpeg FFPROBE_PATH=/путь/ffprobe npm start` |
+
+Приложение само ищет программы в `PATH`, `/opt/homebrew/bin`, `/usr/local/bin`, `/opt/local/bin` (MacPorts) и `~/.brew/bin`. Рендер использует аппаратный **VideoToolbox**, если ваш ffmpeg его поддерживает, иначе программный x264 (медленнее, результат тот же).
 
 ## На iPhone
 
