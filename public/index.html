@@ -276,6 +276,7 @@
             <div class="field">
               <label for="chromaColor">Цвет, который убрать</label>
               <input type="color" id="chromaColor" data-setting="look.chroma.color">
+              <button type="button" class="btn btn-sm" id="chromaPick">Определить по краям кадра</button>
             </div>
             <div class="field">
               <label for="chromaBg">Что показать вместо него</label>
@@ -290,7 +291,7 @@
             <label for="chromaSmooth">Мягкость края: <output data-for="look.chroma.smooth"></output></label>
             <input type="range" id="chromaSmooth" min="0" max="100" step="1" data-setting="look.chroma.smooth">
           </div>
-          <small class="muted">Если остаётся зелёная кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
+          <small class="muted">Цвет фона подбирается по краям кадра автоматически. Если остаётся кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
         </div>
         <label class="switch"><input type="checkbox" data-setting="look.partLabel"><span>Номер части в начале</span></label>
         <div class="grid-2 dep" data-dep="look.partLabel">

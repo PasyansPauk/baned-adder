@@ -193,6 +193,43 @@ for (const el of settingEls) {
   if (el.type === 'number') el.addEventListener('blur', () => (el.value = getPath(state.settings, el.dataset.setting)));
 }
 
+/** Определяет цвет фона по краям текущего кадра (медиана по каналам) и подставляет его как цвет хромакея. */
+function detectChromaColor() {
+  const v = $('workVideo');
+  if (!state.video || !v.videoWidth) return false;
+  const w = 64;
+  const h = Math.max(8, Math.round((w * v.videoHeight) / v.videoWidth));
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try {
+    ctx.drawImage(v, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const ch = [[], [], []];
+    const m = 3;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        if (x >= m && x < w - m && y >= m && y < h - m) continue;
+        const i = (y * w + x) * 4;
+        for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
+      }
+    const med = (a) => a.sort((p, q) => p - q)[a.length >> 1];
+    const hex = ch.map((a) => med(a).toString(16).padStart(2, '0')).join('');
+    applySetting('look.chroma.color', '#' + hex);
+    writeForm();
+    return true;
+  } catch {
+    return false;
+  }
+}
+$('chromaPick').addEventListener('click', () => {
+  if (!detectChromaColor()) toast('Сначала загрузите видео', true);
+});
+document.querySelector('[data-setting="look.chroma.enabled"]').addEventListener('change', (e) => {
+  if (e.target.checked) detectChromaColor();
+});
+
 $('lenChips').addEventListener('click', (e) => {
   const c = e.target.closest('[data-len]');
   if (!c) return;
