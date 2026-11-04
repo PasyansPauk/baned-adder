@@ -121,7 +121,22 @@ input[type="range"] { width: 100%; accent-color: var(--accent); min-height: 32px
 output { color: var(--text); font-weight: 600; }
 
 .switch { display: flex; align-items: flex-start; gap: 10px; margin: 10px 0; cursor: pointer; min-height: 32px; }
-.switch input { width: 22px; height: 22px; margin: 1px 0 0; accent-color: var(--accent); flex-shrink: 0; }
+.switch input {
+  appearance: none; -webkit-appearance: none;
+  width: 22px; height: 22px; margin: 1px 0 0; flex-shrink: 0; cursor: pointer;
+  border: 2px solid var(--muted); border-radius: 6px; background: var(--surface-2);
+  display: grid; place-content: center; transition: background-color 0.12s, border-color 0.12s;
+}
+.switch input::after {
+  content: ""; width: 6px; height: 11px; margin-top: -2px;
+  border: solid var(--accent-ink); border-width: 0 2.5px 2.5px 0; transform: rotate(45deg); opacity: 0;
+}
+.switch input:checked { background: var(--accent); border-color: var(--accent); }
+.switch input:checked::after { opacity: 1; }
+.switch input:hover { border-color: var(--text); }
+.switch input:checked:hover { border-color: var(--accent); filter: brightness(1.1); }
+.switch input:focus-visible { outline: none; box-shadow: var(--focus); }
+.switch input:disabled { opacity: 0.5; cursor: default; }
 .dep { transition: opacity 0.15s; }
 .dep.is-off { display: none; }
 
@@ -191,6 +206,8 @@ details.sub summary { cursor: pointer; padding: 8px 0; font-weight: 600; list-st
 }
 .banner-item img, .banner-item video { width: 64px; height: 40px; object-fit: contain; background: #000; border-radius: 6px; flex-shrink: 0; }
 .banner-item .grow { flex: 1; min-width: 0; }
+.swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; border: 1px solid var(--border-strong); }
+.warn-text { color: var(--warn); }
 
 /* ---------- превью ---------- */
 .stage {

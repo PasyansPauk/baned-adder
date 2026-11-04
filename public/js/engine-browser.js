@@ -3,7 +3,7 @@
 // Рендер идёт в реальном времени (часть 3 мин ≈ 3 мин записи), зато работает даже на iPhone без Mac.
 import { blurRadius, fadeDuration, fitRect, layerAnim } from './core/layout.js';
 import { orderLayers } from './core/layers.js';
-import { BITMAP_KINDS } from './graphics.js';
+import { BITMAP_KINDS, edgeColor } from './graphics.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -217,6 +217,8 @@ export class BrowserEngine {
         const r = this.factory.cardRect(layer.banner);
         if (el && el.readyState >= 2) {
           const c = this.s.ads.chroma;
+          // цвет ещё не определён (кадр не был готов при загрузке) — берём его с текущего кадра
+          if (c?.enabled && c.auto && !b.keyColor) b.keyColor = edgeColor(el);
           if (c?.enabled) this.drawKeyed(ctx, el, { x: r.x, y: r.y + a.dy, w: r.w, h: r.h }, (c.auto && b.keyColor) || c.color);
           else ctx.drawImage(el, r.x, r.y + a.dy, r.w, r.h);
         }

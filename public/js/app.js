@@ -3,7 +3,7 @@ import { DEFAULT_SETTINGS, normalizeSettings } from './core/settings.js';
 import { buildPlan } from './core/plan.js';
 import { outputSize } from './core/layout.js';
 import { fillTemplate, fmtTime, parseTime, sanitizeFileName } from './core/util.js';
-import { LayerFactory } from './graphics.js';
+import { LayerFactory, edgeColor } from './graphics.js';
 import { BrowserEngine, pickRecorderMime, seekTo } from './engine-browser.js';
 import { analyzeInBrowser } from './analyze-browser.js';
 import {
@@ -195,6 +195,14 @@ for (const el of settingEls) {
     if (el.dataset.setting === 'output.engine') onEngineChanged();
   });
   if (el.type === 'number') el.addEventListener('blur', () => (el.value = getPath(state.settings, el.dataset.setting)));
+}
+
+for (const el of document.querySelectorAll('[data-setting^="ads.chroma."]')) {
+  el.addEventListener(el.type === 'checkbox' ? 'change' : 'input', async () => {
+    await ensureKeyColors();
+    renderBanners();
+    schedulePlan(0);
+  });
 }
 
 $('lenChips').addEventListener('click', (e) => {
@@ -668,33 +676,42 @@ $('linkInput').addEventListener('paste', () => setTimeout(() => ($('linkInput').
 // ------------------------------------------------------------ баннеры
 
 let bannerSeq = 0;
-/** Цвет фона видео по краям первого кадра (медиана по каналам) — для хромакея баннера. */
+/** Ждёт, пока у видео появится декодированный кадр (Safari после загрузки метаданных кадр ещё не рисует). */
+function waitFrame(v, timeout = 3000) {
+  return new Promise((res) => {
+    if (v.readyState >= 2) return res();
+    const done = () => {
+      clearTimeout(t);
+      v.removeEventListener('loadeddata', done);
+      res();
+    };
+    const t = setTimeout(done, timeout);
+    v.addEventListener('loadeddata', done);
+  });
+}
+
+/** Цвет зелёного фона видеобаннера: пробуем несколько кадров, берём первый цветной край. */
 async function detectEdgeColor(v) {
+  const dur = v.duration || 1;
   try {
-    await seekTo(v, Math.min(0.1, (v.duration || 1) / 2));
-    if (!v.videoWidth) return null;
-    const w = 64;
-    const h = Math.max(8, Math.round((w * v.videoHeight) / v.videoWidth));
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const ctx = c.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(v, 0, 0, w, h);
-    const d = ctx.getImageData(0, 0, w, h).data;
-    const ch = [[], [], []];
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        if (x >= 2 && x < w - 2 && y >= 2 && y < h - 2) continue;
-        const i = (y * w + x) * 4;
-        for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
-      }
-    const med = (a) => a.sort((p, q) => p - q)[a.length >> 1];
-    return '#' + ch.map((a) => med(a).toString(16).padStart(2, '0')).join('');
-  } catch {
+    await waitFrame(v);
+    for (const t of [0.15, dur * 0.3, dur * 0.6]) {
+      await seekTo(v, Math.min(t, Math.max(0, dur - 0.05)));
+      await waitFrame(v);
+      const c = edgeColor(v);
+      if (c) return c;
+    }
     return null;
   } finally {
-    v.currentTime = 0;
+    await seekTo(v, 0).catch(() => {});
   }
+}
+
+/** Перед рендером: у каждого видеобаннера должен быть определён цвет фона. */
+async function ensureKeyColors() {
+  const c = state.settings.ads.chroma;
+  if (!c.enabled || !c.auto) return;
+  for (const b of state.banners) if (b.kind === 'video' && !b.keyColor) b.keyColor = await detectEdgeColor(b.el);
 }
 
 async function addBanners(files) {
@@ -751,10 +768,18 @@ function renderBanners() {
   for (const b of state.banners) {
     const li = document.createElement('li');
     li.className = 'banner-item';
-    const thumb = b.kind === 'image' ? `<img src="${b.url}" alt="">` : `<video src="${b.url}" muted playsinline preload="metadata"></video>`;
+    const thumb = b.kind === 'image' ? `<img src="${b.url}" alt="">` : `<video src="${b.url}#t=0.5" muted playsinline preload="metadata"></video>`;
+    const ck = state.settings.ads.chroma;
+    let key = '';
+    if (b.kind === 'video' && ck.enabled) {
+      const col = ck.auto ? b.keyColor : ck.color;
+      key = col
+        ? ` · убираю фон <span class="swatch" style="background:${col}"></span> ${col}`
+        : ' · <span class="warn-text">зелёный фон не найден — выключите «Определять автоматически» и выберите цвет</span>';
+    }
     const info = b.kind === 'image'
       ? `картинка ${b.width}×${b.height}`
-      : `видео ${fmtTime(b.duration)} · ${b.width}×${b.height}`;
+      : `видео ${fmtTime(b.duration)} · ${b.width}×${b.height}${key}`;
     li.innerHTML = `${thumb}<div class="grow"><div class="ellipsis">${esc(b.name)}</div><div class="muted small">${info}</div></div>
       <button type="button" class="btn btn-sm btn-ghost" aria-label="Удалить баннер ${esc(b.name)}">Удалить</button>`;
     li.querySelector('button').addEventListener('click', () => removeBanner(b.id));
@@ -1200,6 +1225,7 @@ function batchPrefix() {
 }
 
 async function renderOnServer(parts, ctl, st, bar) {
+  await ensureKeyColors();
   st.textContent = 'Передаю видео на компьютер…';
   const sourceId = await ensureSourceUploaded();
   await ensureBannersUploaded();

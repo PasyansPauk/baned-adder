@@ -187,6 +187,40 @@ export class LayerFactory {
   }
 }
 
+/**
+ * Цвет фона по краям кадра (медиана по каналам) — для хромакея видеобаннера.
+ * Возвращает null, если кадр ещё не декодирован или края не однотонно-цветные (не похоже на зелёный экран).
+ */
+export function edgeColor(source) {
+  const sw = source.videoWidth || source.width;
+  const sh = source.videoHeight || source.height;
+  if (!sw || !sh) return null;
+  const w = 64;
+  const h = Math.max(8, Math.round((w * sh) / sw));
+  const c = makeCanvas(w, h);
+  const ctx = c.getContext('2d', { willReadFrequently: true });
+  try {
+    ctx.drawImage(source, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const ch = [[], [], []];
+    let opaque = 0;
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        if (x >= 2 && x < w - 2 && y >= 2 && y < h - 2) continue;
+        const i = (y * w + x) * 4;
+        if (d[i + 3] > 200) opaque++;
+        for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
+      }
+    if (opaque < ch[0].length / 2) return null; // кадр ещё не нарисован
+    const [r, g, b] = ch.map((a) => a.sort((p, q) => p - q)[a.length >> 1]);
+    // чёрный/серый/белый край — это не хромакей (часто первый кадр тёмный)
+    if (Math.max(r, g, b) - Math.min(r, g, b) < 60) return null;
+    return '#' + [r, g, b].map((v) => v.toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  }
+}
+
 /** PNG из canvas (для отправки в ffmpeg). */
 export function canvasToBlob(canvas) {
   return new Promise((resolve, reject) =>
