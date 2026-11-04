@@ -1,0 +1,979 @@
+// Baned Adder — интерфейс. Связывает настройки, план, превью и оба движка рендера.
+import { DEFAULT_SETTINGS, normalizeSettings } from './core/settings.js';
+import { buildPlan } from './core/plan.js';
+import { outputSize } from './core/layout.js';
+import { fillTemplate, fmtTime, parseTime, sanitizeFileName } from './core/util.js';
+import { LayerFactory } from './graphics.js';
+import { BrowserEngine, pickRecorderMime, seekTo } from './engine-browser.js';
+import { analyzeInBrowser } from './analyze-browser.js';
+import {
+  analyzeOnServer,
+  buildServerSpecs,
+  cancelJob,
+  getServerStatus,
+  pollJob,
+  startRender,
+  uploadFile,
+} from './engine-server.js';
+import { renderTimeline } from './timeline.js';
+import { drawQR } from './qr.js';
+
+const $ = (id) => document.getElementById(id);
+const STORE_KEY = 'banedAdder.settings.v1';
+const PRESETS_KEY = 'banedAdder.presets.v1';
+
+const state = {
+  settings: loadSettings(),
+  server: null, // статус локального сервера
+  video: null, // { file, url, duration, width, height, uploadId, uploadPromise }
+  banners: [], // { id, file, name, kind, url, el, width, height, aspect, duration, uploadId }
+  analysis: null,
+  analysisCtl: null,
+  plan: null,
+  W: 1080,
+  H: 1920,
+  factory: null,
+  selected: 0,
+  renderCtl: null,
+  results: [],
+};
+
+const engine = new BrowserEngine({ canvas: $('stageCanvas'), video: $('workVideo') });
+
+// ------------------------------------------------------------ хранение настроек
+
+function loadSettings() {
+  try {
+    return normalizeSettings(JSON.parse(localStorage.getItem(STORE_KEY) || 'null'));
+  } catch {
+    return normalizeSettings(null);
+  }
+}
+function saveSettings() {
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(state.settings));
+  } catch {
+    /* приватный режим — не страшно */
+  }
+}
+function loadPresets() {
+  try {
+    return JSON.parse(localStorage.getItem(PRESETS_KEY) || '{}') || {};
+  } catch {
+    return {};
+  }
+}
+function savePresets(p) {
+  try {
+    localStorage.setItem(PRESETS_KEY, JSON.stringify(p));
+  } catch {
+    toast('Не удалось сохранить пресет', true);
+  }
+}
+
+// ------------------------------------------------------------ мелочи UI
+
+let toastTimer;
+function toast(msg, isError = false) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.classList.toggle('is-error', isError);
+  t.classList.add('is-on');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('is-on'), isError ? 6000 : 3000);
+}
+
+const fmtSize = (b) => (b > 1e9 ? `${(b / 1e9).toFixed(2)} ГБ` : `${Math.max(0.1, b / 1e6).toFixed(1)} МБ`);
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+const isAbort = (e) => e?.name === 'AbortError';
+
+function setProgress(el, p) {
+  el.hidden = p === null;
+  if (p !== null) el.querySelector('i').style.width = `${Math.round(Math.max(0, Math.min(1, p)) * 100)}%`;
+}
+
+function getPath(obj, path) {
+  return path.split('.').reduce((o, k) => o?.[k], obj);
+}
+function setPath(obj, path, v) {
+  const keys = path.split('.');
+  const last = keys.pop();
+  keys.reduce((o, k) => o[k], obj)[last] = v;
+}
+
+function activeEngine() {
+  const want = state.settings.output.engine;
+  const ok = !!state.server?.ffmpeg?.available;
+  if (want === 'browser') return 'browser';
+  return ok ? 'server' : 'browser';
+}
+
+// ------------------------------------------------------------ привязка настроек к форме
+
+const settingEls = [...document.querySelectorAll('[data-setting]')];
+
+function writeForm() {
+  const s = state.settings;
+  for (const el of settingEls) {
+    const v = getPath(s, el.dataset.setting);
+    if (el.type === 'checkbox') el.checked = !!v;
+    else if (el.type === 'radio') el.checked = el.value === String(v);
+    else if (el.dataset.type === 'time') el.value = fmtTime(v);
+    else el.value = v;
+  }
+  syncOutputs();
+  syncDeps();
+  syncChips();
+}
+
+function syncOutputs() {
+  for (const o of document.querySelectorAll('output[data-for]')) {
+    const v = getPath(state.settings, o.dataset.for);
+    o.textContent = typeof v === 'number' ? String(Math.round(v * 100) / 100) : v;
+  }
+  document.documentElement.style.setProperty('--accent', state.settings.look.accent);
+}
+
+function syncDeps() {
+  for (const el of document.querySelectorAll('[data-dep]')) {
+    const dep = el.dataset.dep;
+    let on;
+    const m = dep.match(/^([\w.]+)(!?=)(.+)$/);
+    if (m) {
+      const v = m[1] === 'engine' ? activeEngine() : String(getPath(state.settings, m[1]));
+      on = m[2] === '=' ? v === m[3] : v !== m[3];
+    } else on = !!getPath(state.settings, dep);
+    el.classList.toggle('is-off', !on);
+  }
+  const pause = state.settings.ads.mode === 'pause';
+  $('modeHint').textContent = pause
+    ? 'Видео замирает (стоп-кадр с размытием), показывается баннер, затем видео продолжается с того же места.'
+    : 'Баннер появляется поверх идущего видео, звук не прерывается.';
+}
+
+function syncChips() {
+  for (const c of document.querySelectorAll('#lenChips .chip')) {
+    c.classList.toggle('is-active', Number(c.dataset.len) === state.settings.split.targetLen);
+  }
+}
+
+function readEl(el) {
+  if (el.type === 'checkbox') return el.checked;
+  if (el.dataset.type === 'time') return parseTime(el.value);
+  if (el.type === 'number' || el.type === 'range' || el.dataset.type === 'number') return Number(el.value);
+  return el.value;
+}
+
+function applySetting(path, value) {
+  const next = structuredClone(state.settings);
+  setPath(next, path, value);
+  state.settings = normalizeSettings(next);
+  saveSettings();
+  syncOutputs();
+  syncDeps();
+  syncChips();
+  schedulePlan();
+}
+
+for (const el of settingEls) {
+  const ev = el.type === 'checkbox' || el.type === 'radio' || el.tagName === 'SELECT' || el.dataset.type === 'time' ? 'change' : 'input';
+  el.addEventListener(ev, () => {
+    if (el.type === 'radio' && !el.checked) return;
+    const v = readEl(el);
+    if (el.dataset.type === 'time' && !Number.isFinite(v)) {
+      toast('Введите время как мм:сс, например 2:30', true);
+      el.value = fmtTime(getPath(state.settings, el.dataset.setting));
+      return;
+    }
+    applySetting(el.dataset.setting, v);
+    if (el.dataset.type === 'time') el.value = fmtTime(getPath(state.settings, el.dataset.setting));
+    if (el.dataset.setting === 'output.engine') onEngineChanged();
+  });
+  if (el.type === 'number') el.addEventListener('blur', () => (el.value = getPath(state.settings, el.dataset.setting)));
+}
+
+$('lenChips').addEventListener('click', (e) => {
+  const c = e.target.closest('[data-len]');
+  if (!c) return;
+  applySetting('split.targetLen', Number(c.dataset.len));
+  $('targetLen').value = fmtTime(state.settings.split.targetLen);
+});
+
+document.querySelectorAll('[data-step]').forEach((b) =>
+  b.addEventListener('click', () => {
+    const input = $(b.dataset.target);
+    input.value = Math.max(0, Number(input.value || 0) + Number(b.dataset.step));
+    input.dispatchEvent(new Event('input'));
+  })
+);
+
+// ------------------------------------------------------------ сервер
+
+async function detectServer() {
+  state.server = await getServerStatus();
+  const badge = $('engineBadge');
+  if (state.server?.ffmpeg?.available) {
+    badge.textContent = 'Компьютер + ffmpeg';
+    badge.className = 'badge ok';
+    badge.title = `Найден локальный сервер с ffmpeg ${state.server.ffmpeg.version}: быстрый рендер`;
+  } else if (state.server) {
+    badge.textContent = 'Без ffmpeg — браузер';
+    badge.className = 'badge info';
+    badge.title = 'Сервер запущен, но ffmpeg не найден (brew install ffmpeg). Рендер в браузере.';
+  } else {
+    badge.textContent = 'Рендер в браузере';
+    badge.className = 'badge info';
+    badge.title = 'Сервер не найден — всё делается прямо в браузере';
+  }
+  $('phoneBtn').hidden = !(state.server?.lanUrls?.length && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname));
+  const vt = state.server?.ffmpeg?.encoders?.videotoolbox;
+  $('encoder').querySelector('[value="videotoolbox"]').disabled = !vt;
+  if (!vt && state.settings.output.encoder === 'videotoolbox') applySetting('output.encoder', 'x264');
+  onEngineChanged();
+}
+
+function onEngineChanged() {
+  syncDeps();
+  const eng = activeEngine();
+  $('encoderField').hidden = eng !== 'server';
+  const hint = $('engineHint');
+  if (eng === 'server') {
+    hint.textContent = 'Видео обрабатывается ffmpeg на компьютере — быстро и в максимальном качестве. Готовые файлы можно скачать и на iPhone.';
+  } else {
+    const mime = pickRecorderMime();
+    hint.textContent = mime
+      ? `Запись идёт прямо в браузере в реальном времени (часть 3 минуты ≈ 3 минуты записи). Не блокируйте экран и не сворачивайте вкладку. Формат: ${mime.startsWith('video/mp4') ? 'MP4' : 'WebM'}.`
+      : 'Этот браузер не умеет записывать видео. Используйте Safari 14.1+ / Chrome или запустите сервер на Mac.';
+  }
+  if (eng === 'server' && state.video && !state.video.uploadId && !state.video.uploadPromise) ensureSourceUploaded().catch(() => {});
+  updateButtons();
+}
+
+async function ensureSourceUploaded() {
+  const v = state.video;
+  if (!v) throw new Error('Нет видео');
+  if (v.uploadId) return v.uploadId;
+  if (!v.uploadPromise) {
+    const ctl = new AbortController();
+    v.uploadCtl = ctl;
+    v.uploadPromise = uploadFile(v.file, v.file.name, {
+      probe: true,
+      signal: ctl.signal,
+      onProgress: (p) => ($('uploadState').textContent = `Передача на компьютер: ${Math.round(p * 100)}%`),
+    })
+      .then((r) => {
+        if (state.video !== v) return null;
+        v.uploadId = r.id;
+        v.serverInfo = r.info;
+        $('uploadState').textContent = '✓ Видео на компьютере';
+        return r.id;
+      })
+      .catch((e) => {
+        v.uploadPromise = null;
+        if (!isAbort(e)) $('uploadState').textContent = 'Не удалось передать: ' + e.message;
+        throw e;
+      });
+  }
+  return v.uploadPromise;
+}
+
+async function ensureBannersUploaded() {
+  for (const b of state.banners) {
+    if (b.kind !== 'video' || b.uploadId) continue;
+    const r = await uploadFile(b.file, b.file.name || 'banner.mp4');
+    b.uploadId = r.id;
+  }
+}
+
+// ------------------------------------------------------------ загрузка видео
+
+function bindDrop(label, onFiles) {
+  label.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    label.classList.add('is-over');
+  });
+  label.addEventListener('dragleave', () => label.classList.remove('is-over'));
+  label.addEventListener('drop', (e) => {
+    e.preventDefault();
+    label.classList.remove('is-over');
+    if (e.dataTransfer?.files?.length) onFiles([...e.dataTransfer.files]);
+  });
+}
+
+bindDrop($('videoDrop'), (f) => loadVideo(f.find((x) => x.type.startsWith('video/')) || f[0]));
+bindDrop($('bannerDrop'), (f) => addBanners(f));
+$('videoInput').addEventListener('change', (e) => e.target.files[0] && loadVideo(e.target.files[0]));
+$('bannerInput').addEventListener('change', (e) => {
+  addBanners([...e.target.files]);
+  e.target.value = '';
+});
+$('videoReplace').addEventListener('click', () => $('videoInput').click());
+
+function waitMeta(el) {
+  return new Promise((res, rej) => {
+    if (el.readyState >= 1) return res();
+    el.addEventListener('loadedmetadata', () => res(), { once: true });
+    el.addEventListener('error', () => rej(new Error('Не удалось открыть файл. Возможно, формат не поддерживается этим браузером.')), { once: true });
+  });
+}
+
+async function loadVideo(file) {
+  if (!file) return;
+  if (engine.busy || state.renderCtl) return toast('Сначала остановите воспроизведение или рендер', true);
+  stopAnalysis();
+  const old = state.video;
+  if (old) {
+    old.uploadCtl?.abort();
+    URL.revokeObjectURL(old.url);
+    if (old.uploadId) fetch(`api/uploads/${old.uploadId}`, { method: 'DELETE' }).catch(() => {});
+  }
+  const url = URL.createObjectURL(file);
+  const work = $('workVideo');
+  work.src = url;
+  $('videoPreview').src = url;
+  try {
+    await waitMeta(work);
+  } catch (e) {
+    toast(e.message, true);
+    return;
+  }
+  state.video = { file, url, duration: work.duration, width: work.videoWidth, height: work.videoHeight };
+  state.analysis = null;
+  state.selected = 0;
+  clearResults();
+  $('videoDrop').hidden = true;
+  $('videoInfo').hidden = false;
+  $('videoName').textContent = file.name;
+  $('videoMeta').textContent = `${fmtTime(work.duration)} · ${work.videoWidth}×${work.videoHeight} · ${fmtSize(file.size)}`;
+  $('uploadState').textContent = '';
+  $('stageEmpty').hidden = true;
+  await seekTo(work, Math.min(1, work.duration / 2));
+  schedulePlan(0);
+  if (activeEngine() === 'server') ensureSourceUploaded().catch(() => {});
+  startAnalysis();
+}
+
+// ------------------------------------------------------------ баннеры
+
+let bannerSeq = 0;
+async function addBanners(files) {
+  if (engine.busy || state.renderCtl) return toast('Сначала остановите воспроизведение или рендер', true);
+  for (const file of files) {
+    const kind = file.type.startsWith('video/') ? 'video' : file.type.startsWith('image/') ? 'image' : null;
+    if (!kind) {
+      toast(`«${file.name}» — не картинка и не видео`, true);
+      continue;
+    }
+    const url = URL.createObjectURL(file);
+    const b = { id: ++bannerSeq, file, name: file.name, kind, url };
+    try {
+      if (kind === 'image') {
+        const img = new Image();
+        img.src = url;
+        await img.decode();
+        Object.assign(b, { el: img, width: img.naturalWidth, height: img.naturalHeight });
+      } else {
+        const v = document.createElement('video');
+        v.playsInline = true;
+        v.preload = 'auto';
+        v.src = url;
+        document.querySelector('.work-media').appendChild(v);
+        await waitMeta(v);
+        Object.assign(b, { el: v, width: v.videoWidth, height: v.videoHeight, duration: v.duration });
+      }
+      b.aspect = b.width / b.height || 16 / 9;
+      state.banners.push(b);
+    } catch {
+      URL.revokeObjectURL(url);
+      toast(`Не удалось открыть «${file.name}»`, true);
+    }
+  }
+  renderBanners();
+  schedulePlan(0);
+}
+
+function removeBanner(id) {
+  if (engine.busy || state.renderCtl) return toast('Сначала остановите воспроизведение или рендер', true);
+  const i = state.banners.findIndex((b) => b.id === id);
+  if (i < 0) return;
+  const [b] = state.banners.splice(i, 1);
+  if (b.kind === 'video') b.el.remove();
+  URL.revokeObjectURL(b.url);
+  renderBanners();
+  schedulePlan(0);
+}
+
+function renderBanners() {
+  const ul = $('bannerList');
+  ul.innerHTML = '';
+  for (const b of state.banners) {
+    const li = document.createElement('li');
+    li.className = 'banner-item';
+    const thumb = b.kind === 'image' ? `<img src="${b.url}" alt="">` : `<video src="${b.url}" muted playsinline preload="metadata"></video>`;
+    const info = b.kind === 'image'
+      ? `картинка ${b.width}×${b.height}`
+      : `видео ${fmtTime(b.duration)} · ${b.width}×${b.height}`;
+    li.innerHTML = `${thumb}<div class="grow"><div class="ellipsis">${esc(b.name)}</div><div class="muted small">${info}</div></div>
+      <button type="button" class="btn btn-sm btn-ghost" aria-label="Удалить баннер ${esc(b.name)}">Удалить</button>`;
+    li.querySelector('button').addEventListener('click', () => removeBanner(b.id));
+    ul.appendChild(li);
+  }
+  $('rotationField').hidden = state.banners.length < 2;
+}
+
+// ------------------------------------------------------------ анализ
+
+function stopAnalysis() {
+  state.analysisCtl?.abort();
+  state.analysisCtl = null;
+}
+
+async function startAnalysis() {
+  if (!state.video) return;
+  stopAnalysis();
+  const ctl = new AbortController();
+  state.analysisCtl = ctl;
+  const v = state.video;
+  const st = $('analysisState');
+  const bar = $('analysisProgress');
+  $('analyzeCancel').hidden = false;
+  updateButtons();
+  try {
+    let result;
+    if (activeEngine() === 'server') {
+      st.textContent = 'Передаю видео на компьютер для анализа…';
+      setProgress(bar, 0);
+      const id = await ensureSourceUploaded();
+      st.textContent = 'Ищу паузы в речи и смены сцен (ffmpeg)…';
+      result = await analyzeOnServer(id, { signal: ctl.signal, onProgress: (p) => setProgress(bar, p) });
+    } else {
+      st.textContent = 'Ищу паузы в речи и смены сцен…';
+      setProgress(bar, 0);
+      result = await analyzeInBrowser(v.file, v.url, v.duration, {
+        signal: ctl.signal,
+        onProgress: (p, label) => {
+          setProgress(bar, p);
+          st.textContent = `Анализ: ${label} ${Math.round(p * 100)}%`;
+        },
+      });
+    }
+    if (state.video !== v) return;
+    state.analysis = result;
+    st.textContent = `Найдено пауз: ${result.silences.length}, смен сцен: ${result.scenes.length}.` + (result.note ? ` ${result.note}` : '');
+    schedulePlan(0);
+  } catch (e) {
+    if (isAbort(e)) st.textContent = 'Анализ отменён — нарезка по ровному времени.';
+    else st.textContent = 'Анализ не удался: ' + e.message + ' Нарезка по ровному времени.';
+  } finally {
+    if (state.analysisCtl === ctl) state.analysisCtl = null;
+    setProgress(bar, null);
+    $('analyzeCancel').hidden = true;
+    updateButtons();
+  }
+}
+
+$('analyzeBtn').addEventListener('click', () => startAnalysis());
+$('analyzeCancel').addEventListener('click', () => stopAnalysis());
+
+// ------------------------------------------------------------ план
+
+let planTimer;
+function schedulePlan(delay = 150) {
+  clearTimeout(planTimer);
+  planTimer = setTimeout(rebuildPlan, delay);
+}
+
+function rebuildPlan() {
+  if (!state.video) {
+    updateButtons();
+    return;
+  }
+  if (engine.busy && !state.renderCtl) engine.stop();
+  const s = state.settings;
+  state.plan = buildPlan({
+    duration: state.video.duration,
+    analysis: state.analysis,
+    settings: s,
+    banners: state.banners.map((b) => ({ kind: b.kind, duration: b.duration })),
+  });
+  const { W, H } = outputSize(s.look, state.video.width, state.video.height);
+  state.W = W;
+  state.H = H;
+  state.factory = new LayerFactory({ W, H, settings: state.plan.settings, banners: state.banners });
+  engine.configure({
+    W,
+    H,
+    settings: state.plan.settings,
+    factory: state.factory,
+    banners: state.banners,
+    srcW: state.video.width,
+    srcH: state.video.height,
+  });
+  if (state.selected >= state.plan.parts.length) state.selected = 0;
+  renderPlan();
+  renderCaptions();
+  drawStill();
+  updateButtons();
+}
+
+function renderPlan() {
+  const plan = state.plan;
+  const parts = plan.parts;
+  const durs = parts.map((p) => p.duration);
+  const adsTotal = parts.reduce((a, p) => a + p.ads.length, 0);
+  const minD = Math.min(...durs);
+  const maxD = Math.max(...durs);
+  $('planSummary').innerHTML = `
+    <div class="stat"><b>${parts.length}</b><span>${parts.length === 1 ? 'часть' : parts.length < 5 ? 'части' : 'частей'}</span></div>
+    <div class="stat"><b>${Math.abs(maxD - minD) < 1 ? fmtTime(maxD) : `${fmtTime(minD)}–${fmtTime(maxD)}`}</b><span>длина части</span></div>
+    <div class="stat"><b>${adsTotal}</b><span>показов рекламы</span></div>
+    <div class="stat"><b>${state.W}×${state.H}</b><span>кадр</span></div>`;
+  renderTimeline($('timeline'), plan, { selected: state.selected });
+  $('legend').hidden = false;
+  $('warnings').innerHTML = plan.warnings.map((w) => `<li>${esc(w)}</li>`).join('');
+  if (!state.banners.length) {
+    $('warnings').innerHTML += '<li>Баннеры не добавлены — видео будет только нарезано на части.</li>';
+  }
+
+  const list = $('partList');
+  list.innerHTML = parts
+    .map((p, i) => {
+      const ads = p.ads.length ? `реклама: ${p.ads.map((a) => fmtTime(a.outStart)).join(', ')}` : 'без рекламы';
+      const recap = p.recapLen > 0 ? ` · повтор ${Math.round(p.recapLen)} с` : '';
+      return `<li class="part-item${i === state.selected ? ' is-selected' : ''}" data-part="${i}">
+        <div class="grow"><b>Часть ${i + 1}</b> · ${fmtTime(p.duration)}
+          <div class="muted small">из исходника ${fmtTime(p.srcStart)}–${fmtTime(p.srcEnd)}${recap} · ${ads}</div></div>
+        <div class="row gap-s">
+          <button type="button" class="btn btn-sm" data-act="preview" data-part="${i}" aria-label="Смотреть часть ${i + 1}">▶ Смотреть</button>
+          <button type="button" class="btn btn-sm" data-act="render" data-part="${i}" aria-label="Создать только часть ${i + 1}">Создать</button>
+        </div></li>`;
+    })
+    .join('');
+
+  const sel = $('previewPart');
+  sel.innerHTML = parts.map((p, i) => `<option value="${i}">Часть ${i + 1} · ${fmtTime(p.duration)}</option>`).join('');
+  sel.value = String(state.selected);
+}
+
+function selectPart(i, { still = true } = {}) {
+  state.selected = i;
+  $('previewPart').value = String(i);
+  document.querySelectorAll('.part-item').forEach((el) => el.classList.toggle('is-selected', Number(el.dataset.part) === i));
+  document.querySelectorAll('.tl-row').forEach((el, k) => el.classList.toggle('is-selected', k === i));
+  if (still) drawStill();
+}
+
+$('partList').addEventListener('click', (e) => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  const i = Number(b.dataset.part);
+  if (b.dataset.act === 'preview') {
+    selectPart(i, { still: false });
+    playPreview(0);
+    $('stage').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } else renderParts([state.plan.parts[i]]);
+});
+
+$('timeline').addEventListener('click', (e) => {
+  const ad = e.target.closest('.tl-ad');
+  const bar = e.target.closest('.tl-bar');
+  if (ad) {
+    selectPart(Number(ad.dataset.part), { still: false });
+    playPreview(Math.max(0, Number(ad.dataset.out) - 2));
+  } else if (bar) selectPart(Number(bar.dataset.part));
+});
+
+$('previewPart').addEventListener('change', (e) => selectPart(Number(e.target.value)));
+
+// ------------------------------------------------------------ превью
+
+let stillToken = 0;
+async function drawStill() {
+  const part = state.plan?.parts[state.selected];
+  if (!part || engine.busy) return;
+  const token = ++stillToken;
+  const t = part.ads.length ? part.ads[0].outStart + Math.min(1.2, (part.ads[0].outEnd - part.ads[0].outStart) / 2) : Math.min(1.5, part.duration / 2);
+  // дождаться предыдущей перемотки, чтобы кадры не перепутались
+  await new Promise((r) => setTimeout(r, 30));
+  if (token !== stillToken || engine.busy) return;
+  try {
+    await engine.drawStill(part, t);
+    $('previewTime').textContent = `${fmtTime(t)} / ${fmtTime(part.duration)}`;
+  } catch {
+    /* ignore */
+  }
+}
+
+async function playPreview(fromOut = 0) {
+  const part = state.plan?.parts[state.selected];
+  if (!part || state.renderCtl) return;
+  if (engine.busy) {
+    engine.stop();
+    await new Promise((r) => setTimeout(r, 60));
+  }
+  engine.unlockAudio();
+  $('previewPlay').hidden = true;
+  $('previewStop').hidden = false;
+  try {
+    await engine.play(part, {
+      fromOut,
+      onTime: (t) => ($('previewTime').textContent = `${fmtTime(t)} / ${fmtTime(part.duration)}`),
+    });
+  } catch (e) {
+    toast('Превью: ' + e.message, true);
+  } finally {
+    $('previewPlay').hidden = false;
+    $('previewStop').hidden = true;
+  }
+}
+
+$('previewPlay').addEventListener('click', () => {
+  engine.unlockAudio();
+  playPreview(0);
+});
+$('previewAd').addEventListener('click', () => {
+  engine.unlockAudio();
+  const part = state.plan?.parts[state.selected];
+  const ad = part?.ads[0];
+  playPreview(ad ? Math.max(0, ad.outStart - 2) : 0);
+});
+$('previewStop').addEventListener('click', () => engine.stop());
+
+function updateButtons() {
+  const hasPlan = !!state.plan?.parts?.length;
+  const rendering = !!state.renderCtl;
+  $('previewPlay').disabled = !hasPlan || rendering;
+  $('previewAd').disabled = !hasPlan || rendering || !state.plan?.parts[state.selected]?.ads.length;
+  $('renderAll').disabled = !hasPlan || rendering;
+  $('analyzeBtn').disabled = !state.video || !!state.analysisCtl || rendering;
+  document.querySelectorAll('[data-act="render"]').forEach((b) => (b.disabled = rendering));
+}
+
+// ------------------------------------------------------------ рендер
+
+function fileNameFor(part) {
+  const base = state.video ? sanitizeFileName(state.video.file.name) : 'video';
+  return sanitizeFileName(fillTemplate(state.settings.output.fileName, { name: base, n: part.index + 1, total: part.total }), `part${part.index + 1}`);
+}
+
+function clearResults() {
+  for (const r of state.results) if (r.objectUrl) URL.revokeObjectURL(r.objectUrl);
+  state.results = [];
+  $('results').innerHTML = '';
+  $('downloadAllRow').hidden = true;
+}
+
+function addResult(r) {
+  state.results = state.results.filter((x) => x.index !== r.index);
+  state.results.push(r);
+  state.results.sort((a, b) => a.index - b.index);
+  renderResults();
+}
+
+function renderResults() {
+  const ul = $('results');
+  ul.innerHTML = '';
+  for (const r of state.results) {
+    const li = document.createElement('li');
+    li.className = 'result-item';
+    const href = r.objectUrl || r.url;
+    const dl = r.objectUrl ? href : `${href}?download=1`;
+    li.innerHTML = `<div class="grow"><b>Часть ${r.index + 1}</b> <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)}</span></div>
+      <div class="row gap-s wrap">
+        <button type="button" class="btn btn-sm" data-act="watch">Смотреть</button>
+        <a class="btn btn-sm" href="${dl}" download="${esc(r.name)}">Скачать</a>
+        ${navigator.share ? '<button type="button" class="btn btn-sm btn-primary" data-act="share">Сохранить / Поделиться</button>' : ''}
+      </div>`;
+    li.querySelector('[data-act="watch"]').addEventListener('click', (e) => {
+      const existing = li.querySelector('video');
+      if (existing) {
+        existing.remove();
+        e.target.textContent = 'Смотреть';
+        return;
+      }
+      const v = document.createElement('video');
+      v.src = href;
+      v.controls = true;
+      v.playsInline = true;
+      li.appendChild(v);
+      e.target.textContent = 'Скрыть';
+      v.play().catch(() => {});
+    });
+    li.querySelector('[data-act="share"]')?.addEventListener('click', (e) => shareResult(r, e.target));
+    ul.appendChild(li);
+  }
+  $('downloadAllRow').hidden = state.results.length < 2;
+}
+
+async function shareResult(r, btn) {
+  try {
+    if (!r.file) {
+      btn.textContent = 'Готовлю файл…';
+      btn.disabled = true;
+      const blob = r.blob || (await (await fetch(r.url)).blob());
+      r.file = new File([blob], r.name, { type: blob.type || 'video/mp4' });
+      btn.disabled = false;
+    }
+    if (navigator.canShare && !navigator.canShare({ files: [r.file] })) throw new Error('Этот браузер не умеет делиться файлами — используйте «Скачать»');
+    await navigator.share({ files: [r.file], title: r.name });
+    btn.textContent = 'Сохранить / Поделиться';
+  } catch (e) {
+    btn.disabled = false;
+    if (e.name === 'NotAllowedError') {
+      // iOS разрешает «Поделиться» только сразу после нажатия — файл уже готов, нужно нажать ещё раз
+      btn.textContent = 'Нажмите ещё раз, чтобы сохранить';
+    } else if (!isAbort(e)) {
+      btn.textContent = 'Сохранить / Поделиться';
+      toast(e.message, true);
+    } else btn.textContent = 'Сохранить / Поделиться';
+  }
+}
+
+$('downloadAll').addEventListener('click', async () => {
+  for (const r of state.results) {
+    const a = document.createElement('a');
+    a.href = r.objectUrl || `${r.url}?download=1`;
+    a.download = r.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    await new Promise((res) => setTimeout(res, 900));
+  }
+});
+
+$('renderAll').addEventListener('click', () => {
+  engine.unlockAudio();
+  renderParts(state.plan.parts);
+});
+$('renderCancel').addEventListener('click', () => {
+  state.renderCtl?.abort();
+  engine.stop();
+});
+
+let wakeLock = null;
+async function keepAwake(on) {
+  try {
+    if (on && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
+    else if (!on && wakeLock) {
+      await wakeLock.release();
+      wakeLock = null;
+    }
+  } catch {
+    /* не поддерживается */
+  }
+}
+
+function beforeUnload(e) {
+  e.preventDefault();
+  e.returnValue = '';
+}
+
+async function renderParts(parts) {
+  if (!parts?.length || state.renderCtl) return;
+  engine.unlockAudio();
+  if (engine.busy) {
+    engine.stop();
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  const ctl = new AbortController();
+  state.renderCtl = ctl;
+  const st = $('renderState');
+  const bar = $('renderProgress');
+  $('renderCancel').hidden = false;
+  updateButtons();
+  window.addEventListener('beforeunload', beforeUnload);
+  setProgress(bar, 0);
+  const t0 = performance.now();
+  try {
+    if (activeEngine() === 'server') await renderOnServer(parts, ctl, st, bar);
+    else await renderInBrowser(parts, ctl, st, bar);
+    const sec = Math.round((performance.now() - t0) / 1000);
+    st.textContent = `Готово: ${parts.length} ${parts.length === 1 ? 'часть' : 'частей'} за ${fmtTime(sec)}.`;
+    toast('Видео готовы');
+  } catch (e) {
+    st.textContent = isAbort(e) ? 'Рендер отменён.' : 'Ошибка: ' + e.message;
+    if (!isAbort(e)) toast('Рендер не удался', true);
+  } finally {
+    state.renderCtl = null;
+    window.removeEventListener('beforeunload', beforeUnload);
+    keepAwake(false);
+    setProgress(bar, null);
+    $('renderCancel').hidden = true;
+    updateButtons();
+    drawStill();
+  }
+}
+
+async function renderOnServer(parts, ctl, st, bar) {
+  st.textContent = 'Передаю видео на компьютер…';
+  const sourceId = await ensureSourceUploaded();
+  await ensureBannersUploaded();
+  st.textContent = 'Готовлю графику…';
+  const specs = await buildServerSpecs(state.plan, parts, {
+    factory: state.factory,
+    banners: state.banners,
+    W: state.W,
+    H: state.H,
+    settings: state.plan.settings,
+    fileNameFor,
+    signal: ctl.signal,
+  });
+  const jobId = await startRender({
+    sourceId,
+    parts: specs,
+    encoder: state.settings.output.encoder,
+    quality: state.settings.output.quality,
+  });
+  ctl.signal.addEventListener('abort', () => cancelJob(jobId), { once: true });
+  const seen = new Set();
+  await pollJob(
+    jobId,
+    (job) => {
+      setProgress(bar, job.progress);
+      if (job.status === 'running') st.textContent = `${job.message || 'Рендер'} · ${Math.round(job.progress * 100)}%`;
+      else if (job.status === 'queued') st.textContent = 'В очереди…';
+      for (const r of job.results) {
+        if (seen.has(r.name)) continue;
+        seen.add(r.name);
+        addResult({ index: r.index, name: r.name, size: r.size, url: r.url });
+      }
+    },
+    ctl.signal
+  );
+}
+
+async function renderInBrowser(parts, ctl, st, bar) {
+  if (!pickRecorderMime()) throw new Error('Браузер не умеет записывать видео');
+  await keepAwake(true);
+  const total = parts.reduce((a, p) => a + p.duration, 0);
+  let done = 0;
+  for (const [k, part] of parts.entries()) {
+    if (ctl.signal.aborted) throw new DOMException('Отменено', 'AbortError');
+    selectPart(part.index, { still: false });
+    st.textContent = `Запись части ${part.index + 1} (${k + 1} из ${parts.length}) — не блокируйте экран`;
+    const blob = await engine.play(part, {
+      record: true,
+      monitor: state.settings.output.monitorAudio,
+      onTime: (t) => {
+        setProgress(bar, (done + t) / total);
+        $('previewTime').textContent = `● ${fmtTime(t)} / ${fmtTime(part.duration)}`;
+      },
+    });
+    if (ctl.signal.aborted || !blob) throw new DOMException('Отменено', 'AbortError');
+    done += part.duration;
+    const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+    const name = `${fileNameFor(part)}.${ext}`;
+    addResult({ index: part.index, name, size: blob.size, blob, objectUrl: URL.createObjectURL(blob) });
+  }
+}
+
+// ------------------------------------------------------------ подписи
+
+function renderCaptions() {
+  const parts = state.plan?.parts || [];
+  const s = state.settings.output;
+  const title = s.title.trim() || (state.video ? state.video.file.name.replace(/\.[^.]+$/, '') : '');
+  $('captionList').innerHTML = parts
+    .map((p, i) => {
+      const text = fillTemplate(s.caption, { title, n: i + 1, total: p.total, next: i + 2, prev: i });
+      return `<li><div><pre>${esc(text)}</pre><button type="button" class="btn btn-sm" data-copy="${i}" aria-label="Скопировать подпись части ${i + 1}">Копировать</button></div></li>`;
+    })
+    .join('');
+}
+
+$('captionList').addEventListener('click', async (e) => {
+  const b = e.target.closest('[data-copy]');
+  if (!b) return;
+  const text = b.parentElement.querySelector('pre').textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    toast('Подпись скопирована');
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    ta.remove();
+    toast('Подпись скопирована');
+  }
+});
+
+// ------------------------------------------------------------ пресеты
+
+function renderPresets() {
+  const p = loadPresets();
+  const names = Object.keys(p);
+  $('presetSelect').innerHTML = names.length
+    ? names.map((n) => `<option value="${esc(n)}">${esc(n)}</option>`).join('')
+    : '<option value="">Нет сохранённых пресетов</option>';
+  $('presetLoad').disabled = !names.length;
+  $('presetDelete').disabled = !names.length;
+}
+
+$('presetSave').addEventListener('click', () => {
+  const name = prompt('Название пресета', 'Мой TikTok');
+  if (!name?.trim()) return;
+  const p = loadPresets();
+  p[name.trim().slice(0, 60)] = state.settings;
+  savePresets(p);
+  renderPresets();
+  $('presetSelect').value = name.trim().slice(0, 60);
+  toast('Пресет сохранён');
+});
+$('presetLoad').addEventListener('click', () => {
+  const p = loadPresets()[$('presetSelect').value];
+  if (!p) return;
+  state.settings = normalizeSettings(p);
+  saveSettings();
+  writeForm();
+  onEngineChanged();
+  schedulePlan(0);
+  toast('Пресет применён');
+});
+$('presetDelete').addEventListener('click', () => {
+  const name = $('presetSelect').value;
+  if (!name || !confirm(`Удалить пресет «${name}»?`)) return;
+  const p = loadPresets();
+  delete p[name];
+  savePresets(p);
+  renderPresets();
+});
+$('presetReset').addEventListener('click', () => {
+  if (!confirm('Вернуть все настройки по умолчанию?')) return;
+  state.settings = normalizeSettings(DEFAULT_SETTINGS);
+  saveSettings();
+  writeForm();
+  onEngineChanged();
+  schedulePlan(0);
+});
+
+// ------------------------------------------------------------ iPhone
+
+$('phoneBtn').addEventListener('click', () => {
+  const urls = state.server?.lanUrls || [];
+  if (!urls.length) return;
+  const canvas = document.createElement('canvas');
+  try {
+    drawQR(canvas, urls[0], 6, 3);
+  } catch {
+    /* ignore */
+  }
+  $('qrBox').replaceChildren(canvas);
+  $('phoneUrls').innerHTML = urls.map((u) => `<code>${esc(u)}</code>`).join('<br>');
+  $('phoneDialog').showModal();
+});
+
+// ------------------------------------------------------------ старт
+
+writeForm();
+renderPresets();
+updateButtons();
+detectServer();
+
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
+
+// для автотестов и отладки
+window.__banedAdder = { state, engine, rebuildPlan, renderParts };

@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Baned Adder — баннеры в видео</title>
+  <meta name="description" content="Локальный редактор: вставка рекламных баннеров в видео и умная нарезка на части для TikTok, Reels и Shorts">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Baned Adder">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="icons/icon.svg" alt="" width="28" height="28">
+      <div>
+        <strong>Baned Adder</strong>
+        <span class="muted small">баннеры в видео + нарезка на части</span>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <span id="engineBadge" class="badge" title="Где будет обрабатываться видео">…</span>
+      <button type="button" id="phoneBtn" class="btn btn-ghost btn-sm" hidden>Открыть на iPhone</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <div class="col-settings">
+
+      <!-- 1. Видео -->
+      <section class="card" id="secVideo" aria-labelledby="hVideo">
+        <h2 id="hVideo"><span class="step">1</span> Видео</h2>
+        <label class="drop" id="videoDrop">
+          <input type="file" id="videoInput" accept="video/*" hidden>
+          <span class="drop-title">Выбрать видео</span>
+          <span class="muted small">или перетащите файл сюда · MP4, MOV, WebM</span>
+        </label>
+        <div id="videoInfo" class="media-info" hidden>
+          <video id="videoPreview" playsinline muted controls preload="metadata"></video>
+          <div class="media-meta">
+            <div id="videoName" class="ellipsis"></div>
+            <div id="videoMeta" class="muted small"></div>
+            <div id="uploadState" class="small"></div>
+            <div class="row gap-s">
+              <button type="button" class="btn btn-sm" id="videoReplace">Заменить</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 2. Баннеры -->
+      <section class="card" id="secBanners" aria-labelledby="hBanners">
+        <h2 id="hBanners"><span class="step">2</span> Рекламные баннеры</h2>
+        <label class="drop drop-sm" id="bannerDrop">
+          <input type="file" id="bannerInput" accept="image/*,video/*" multiple hidden>
+          <span class="drop-title">Добавить баннер</span>
+          <span class="muted small">картинка (PNG, JPG, WebP) или короткое видео · можно несколько</span>
+        </label>
+        <ul id="bannerList" class="banner-list"></ul>
+        <div class="field" id="rotationField" hidden>
+          <label for="rotation">Если баннеров несколько</label>
+          <select id="rotation" data-setting="ads.rotation">
+            <option value="sequence">По очереди</option>
+            <option value="random">Случайно</option>
+            <option value="first">Всегда первый</option>
+          </select>
+        </div>
+      </section>
+
+      <!-- 3. Нарезка -->
+      <section class="card" id="secSplit" aria-labelledby="hSplit">
+        <h2 id="hSplit"><span class="step">3</span> Нарезка на части</h2>
+        <label class="switch"><input type="checkbox" data-setting="split.enabled"><span>Делить видео на части</span></label>
+        <div class="dep" data-dep="split.enabled">
+          <div class="field">
+            <label for="targetLen">Длина одной части (вместе с рекламой и повтором)</label>
+            <div class="row gap-s wrap">
+              <input type="text" id="targetLen" inputmode="numeric" class="input-time" data-setting="split.targetLen" data-type="time" aria-describedby="targetLenHint">
+              <div class="chips" id="lenChips">
+                <button type="button" class="chip" data-len="60">1:00</button>
+                <button type="button" class="chip" data-len="90">1:30</button>
+                <button type="button" class="chip" data-len="120">2:00</button>
+                <button type="button" class="chip" data-len="180">3:00</button>
+                <button type="button" class="chip" data-len="300">5:00</button>
+                <button type="button" class="chip" data-len="600">10:00</button>
+              </div>
+            </div>
+            <small class="muted" id="targetLenHint">Формат мм:сс. Например 2:30</small>
+          </div>
+          <div class="field">
+            <label for="overlap">Повтор конца прошлой части в начале новой: <output data-for="split.overlap"></output> с</label>
+            <input type="range" id="overlap" min="0" max="60" step="1" data-setting="split.overlap">
+            <small class="muted">Зритель, пролиставший к части 2, сразу понимает, на чём остановились</small>
+          </div>
+          <label class="switch"><input type="checkbox" data-setting="split.smart"><span>Умная нарезка: резать в паузах речи и на смене сцен</span></label>
+          <div class="dep" data-dep="split.smart">
+            <div class="field">
+              <label for="tolerance">Можно сдвинуть разрез на: ±<output data-for="split.tolerance"></output> с</label>
+              <input type="range" id="tolerance" min="0" max="60" step="1" data-setting="split.tolerance">
+            </div>
+            <label class="switch"><input type="checkbox" data-setting="split.recapSnap"><span>Начинать повтор с начала фразы</span></label>
+          </div>
+          <label class="switch"><input type="checkbox" data-setting="split.strict"><span>Строго не длиннее заданной длины</span></label>
+        </div>
+      </section>
+
+      <!-- 4. Реклама -->
+      <section class="card" id="secAds" aria-labelledby="hAds">
+        <h2 id="hAds"><span class="step">4</span> Вставка рекламы</h2>
+        <fieldset class="segmented" aria-label="Способ показа">
+          <label><input type="radio" name="adMode" value="pause" data-setting="ads.mode"><span>Пауза + баннер</span></label>
+          <label><input type="radio" name="adMode" value="overlay" data-setting="ads.mode"><span>Поверх видео</span></label>
+        </fieldset>
+        <p class="muted small" id="modeHint"></p>
+        <div class="grid-2">
+          <div class="field">
+            <label for="placement">Где ставить</label>
+            <select id="placement" data-setting="ads.placement">
+              <option value="smart">Умно — в паузах</option>
+              <option value="even">Равномерно</option>
+              <option value="manual">Вручную по времени</option>
+            </select>
+          </div>
+          <div class="field dep" data-dep="ads.placement!=manual">
+            <label for="perPart">Сколько раз в каждой части</label>
+            <div class="stepper">
+              <button type="button" class="btn btn-icon" data-step="-1" data-target="perPart" aria-label="Меньше">−</button>
+              <input type="number" id="perPart" min="0" max="20" step="1" data-setting="ads.perPart" inputmode="numeric">
+              <button type="button" class="btn btn-icon" data-step="1" data-target="perPart" aria-label="Больше">+</button>
+            </div>
+          </div>
+        </div>
+        <div class="field dep" data-dep="ads.placement=manual">
+          <label for="manualTimes">Моменты от начала каждой части</label>
+          <input type="text" id="manualTimes" data-setting="ads.manualTimes" aria-describedby="manualHint">
+          <small class="muted" id="manualHint">Через запятую, например: 0:45, 2:10</small>
+        </div>
+        <div class="grid-2 dep" data-dep="ads.placement!=manual">
+          <div class="field">
+            <label for="minFromStart">Не раньше, чем через (с)</label>
+            <input type="number" id="minFromStart" min="0" max="600" data-setting="ads.minFromStart" inputmode="numeric">
+          </div>
+          <div class="field">
+            <label for="minFromEnd">Не ближе к концу, чем (с)</label>
+            <input type="number" id="minFromEnd" min="0" max="600" data-setting="ads.minFromEnd" inputmode="numeric">
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="field">
+            <label for="imageDuration">Показ картинки: <output data-for="ads.imageDuration"></output> с</label>
+            <input type="range" id="imageDuration" min="1" max="20" step="0.5" data-setting="ads.imageDuration">
+          </div>
+          <div class="field">
+            <label for="maxVideoDuration">Видеобаннер не дольше: <output data-for="ads.maxVideoDuration"></output> с</label>
+            <input type="range" id="maxVideoDuration" min="2" max="90" step="1" data-setting="ads.maxVideoDuration">
+          </div>
+        </div>
+
+        <details class="sub">
+          <summary>Внешний вид баннера</summary>
+          <div class="grid-2">
+            <div class="field">
+              <label for="adSize">Размер: <output data-for="ads.size"></output>% ширины</label>
+              <input type="range" id="adSize" min="30" max="100" step="1" data-setting="ads.size">
+            </div>
+            <div class="field">
+              <label for="adPos">Положение</label>
+              <select id="adPos" data-setting="ads.position">
+                <option value="center">По центру</option>
+                <option value="top">Сверху</option>
+                <option value="bottom">Снизу</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="adAnim">Появление</label>
+              <select id="adAnim" data-setting="ads.anim">
+                <option value="slide">Выезд + проявление</option>
+                <option value="fade">Проявление</option>
+                <option value="none">Без анимации</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="animDur">Скорость анимации: <output data-for="ads.animDur"></output> с</label>
+              <input type="range" id="animDur" min="0.1" max="1.5" step="0.05" data-setting="ads.animDur">
+            </div>
+          </div>
+          <div class="grid-2 dep" data-dep="ads.mode=pause">
+            <div class="field">
+              <label for="freezeBlur">Размытие замершего кадра: <output data-for="ads.freezeBlur"></output></label>
+              <input type="range" id="freezeBlur" min="0" max="40" step="1" data-setting="ads.freezeBlur">
+            </div>
+            <div class="field">
+              <label for="freezeDim">Затемнение: <output data-for="ads.freezeDim"></output>%</label>
+              <input type="range" id="freezeDim" min="0" max="85" step="1" data-setting="ads.freezeDim">
+            </div>
+          </div>
+          <label class="switch"><input type="checkbox" data-setting="ads.tag"><span>Метка «Реклама» на баннере</span></label>
+          <div class="field dep" data-dep="ads.tag">
+            <label for="tagText">Текст метки</label>
+            <input type="text" id="tagText" data-setting="ads.tagText" maxlength="40">
+          </div>
+          <label class="switch"><input type="checkbox" data-setting="ads.progress"><span>Полоска-таймер под баннером</span></label>
+          <label class="switch dep" data-dep="ads.mode=pause"><input type="checkbox" data-setting="ads.adAudio"><span>Звук видеобаннера</span></label>
+          <div class="field dep" data-dep="ads.mode=pause">
+            <label for="audioFade">Плавность звука у паузы: <output data-for="ads.audioFade"></output> с</label>
+            <input type="range" id="audioFade" min="0" max="1" step="0.05" data-setting="ads.audioFade">
+          </div>
+        </details>
+      </section>
+
+      <!-- 5. Оформление -->
+      <section class="card" id="secLook" aria-labelledby="hLook">
+        <h2 id="hLook"><span class="step">5</span> Оформление</h2>
+        <div class="grid-3">
+          <div class="field">
+            <label for="aspect">Формат</label>
+            <select id="aspect" data-setting="look.aspect">
+              <option value="9:16">9:16 — TikTok, Reels, Shorts</option>
+              <option value="source">Как у исходника</option>
+              <option value="1:1">1:1 — квадрат</option>
+              <option value="4:5">4:5 — лента Instagram</option>
+              <option value="16:9">16:9 — YouTube</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="fit">Если не совпадает</label>
+            <select id="fit" data-setting="look.fit">
+              <option value="blur">Вписать + размытый фон</option>
+              <option value="crop">Обрезать до заполнения</option>
+              <option value="pad">Вписать + чёрные поля</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="resolution">Качество кадра</label>
+            <select id="resolution" data-setting="look.resolution" data-type="number">
+              <option value="1080">1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p (быстро)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="accent">Акцентный цвет</label>
+          <input type="color" id="accent" data-setting="look.accent">
+        </div>
+        <label class="switch"><input type="checkbox" data-setting="look.partLabel"><span>Номер части в начале</span></label>
+        <div class="grid-2 dep" data-dep="look.partLabel">
+          <div class="field">
+            <label for="partLabelText">Текст</label>
+            <input type="text" id="partLabelText" data-setting="look.partLabelText" aria-describedby="varsHint">
+          </div>
+          <div class="field">
+            <label for="partLabelDur">Сколько показывать, с (0 — всё время)</label>
+            <input type="number" id="partLabelDur" min="0" max="600" data-setting="look.partLabelDur" inputmode="numeric">
+          </div>
+        </div>
+        <label class="switch"><input type="checkbox" data-setting="look.recapLabel"><span>Подпись на повторе</span></label>
+        <div class="field dep" data-dep="look.recapLabel">
+          <label for="recapLabelText">Текст</label>
+          <input type="text" id="recapLabelText" data-setting="look.recapLabelText">
+        </div>
+        <label class="switch"><input type="checkbox" data-setting="look.endCard"><span>Плашка «Продолжение» в конце части</span></label>
+        <div class="grid-2 dep" data-dep="look.endCard">
+          <div class="field">
+            <label for="endCardText">Текст</label>
+            <input type="text" id="endCardText" data-setting="look.endCardText">
+          </div>
+          <div class="field">
+            <label for="endCardDur">Длительность, с</label>
+            <input type="number" id="endCardDur" min="1" max="30" data-setting="look.endCardDur" inputmode="numeric">
+          </div>
+        </div>
+        <small class="muted" id="varsHint">В текстах можно использовать {n} — номер части, {total} — всего частей, {prev}, {next}</small>
+      </section>
+
+    </div>
+
+    <div class="col-result">
+      <!-- Превью -->
+      <section class="card sticky-card" aria-labelledby="hPreview">
+        <div class="row between">
+          <h2 id="hPreview">Превью</h2>
+          <span class="muted small" id="previewTime"></span>
+        </div>
+        <div class="stage" id="stage">
+          <canvas id="stageCanvas" width="1080" height="1920" aria-label="Превью кадра"></canvas>
+          <div class="stage-empty" id="stageEmpty">Загрузите видео — здесь появится превью части с рекламой</div>
+        </div>
+        <div class="row gap-s wrap preview-controls">
+          <select id="previewPart" aria-label="Какую часть показать"></select>
+          <button type="button" class="btn btn-primary" id="previewPlay" disabled>▶ Смотреть часть</button>
+          <button type="button" class="btn" id="previewAd" disabled>К рекламе</button>
+          <button type="button" class="btn btn-ghost" id="previewStop" hidden>■ Стоп</button>
+        </div>
+      </section>
+
+      <!-- План -->
+      <section class="card" aria-labelledby="hPlan">
+        <div class="row between wrap">
+          <h2 id="hPlan">План</h2>
+          <div class="row gap-s">
+            <button type="button" class="btn btn-sm" id="analyzeBtn" disabled>Найти паузы и сцены</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="analyzeCancel" hidden>Отменить</button>
+          </div>
+        </div>
+        <div id="analysisState" class="small muted" aria-live="polite"></div>
+        <div class="progress" id="analysisProgress" hidden><i></i></div>
+        <div id="planSummary" class="plan-summary"></div>
+        <div id="timeline" class="timeline"></div>
+        <div class="legend small muted" id="legend" hidden>
+          <span><i class="lg lg-recap"></i>повтор</span>
+          <span><i class="lg lg-ad"></i>реклама</span>
+          <span><i class="lg lg-sil"></i>пауза в звуке</span>
+          <span><i class="lg lg-scene"></i>смена сцены</span>
+        </div>
+        <ul id="warnings" class="warnings"></ul>
+        <ol id="partList" class="part-list"></ol>
+      </section>
+
+      <!-- Экспорт -->
+      <section class="card" aria-labelledby="hExport">
+        <h2 id="hExport">Готовые видео</h2>
+        <div class="grid-3">
+          <div class="field">
+            <label for="engine">Где обрабатывать</label>
+            <select id="engine" data-setting="output.engine">
+              <option value="auto">Автоматически</option>
+              <option value="server">На компьютере (ffmpeg, быстро)</option>
+              <option value="browser">В браузере (в реальном времени)</option>
+            </select>
+          </div>
+          <div class="field">
+            <label for="quality">Размер файла</label>
+            <select id="quality" data-setting="output.quality">
+              <option value="high">Высокое качество</option>
+              <option value="medium">Средний</option>
+              <option value="small">Маленький</option>
+            </select>
+          </div>
+          <div class="field" id="encoderField">
+            <label for="encoder">Кодировщик</label>
+            <select id="encoder" data-setting="output.encoder">
+              <option value="x264">x264 (лучше качество)</option>
+              <option value="videotoolbox">VideoToolbox (быстрее на Mac)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="fileName">Имя файла</label>
+          <input type="text" id="fileName" data-setting="output.fileName" aria-describedby="fileHint">
+          <small class="muted" id="fileHint">{name} — имя исходника, {n} — номер части, {total} — всего</small>
+        </div>
+        <label class="switch dep" data-dep="engine=browser"><input type="checkbox" data-setting="output.monitorAudio"><span>Слышать звук во время записи</span></label>
+        <p class="muted small" id="engineHint"></p>
+        <div class="row gap-s wrap">
+          <button type="button" class="btn btn-primary btn-lg" id="renderAll" disabled>Создать все части</button>
+          <button type="button" class="btn btn-ghost" id="renderCancel" hidden>Отменить</button>
+        </div>
+        <div id="renderState" class="small" aria-live="polite"></div>
+        <div class="progress" id="renderProgress" hidden><i></i></div>
+        <ul id="results" class="results"></ul>
+        <div id="downloadAllRow" class="row gap-s" hidden>
+          <button type="button" class="btn" id="downloadAll">Скачать все по очереди</button>
+        </div>
+      </section>
+
+      <!-- Подписи -->
+      <section class="card" aria-labelledby="hCaptions">
+        <h2 id="hCaptions">Подписи для публикации</h2>
+        <div class="field">
+          <label for="title">Название</label>
+          <input type="text" id="title" data-setting="output.title" placeholder="Например: Как я переехал в Сочи">
+        </div>
+        <div class="field">
+          <label for="caption">Шаблон подписи</label>
+          <textarea id="caption" rows="3" data-setting="output.caption"></textarea>
+        </div>
+        <ol id="captionList" class="caption-list"></ol>
+      </section>
+      <section class="card" aria-labelledby="hPresets">
+        <h2 id="hPresets">Пресеты</h2>
+        <p class="muted small">Настройки сохраняются в этом браузере автоматически. Можно сохранить несколько наборов.</p>
+        <div class="row gap-s wrap">
+          <select id="presetSelect" aria-label="Сохранённые пресеты"></select>
+          <button type="button" class="btn btn-sm" id="presetLoad">Применить</button>
+          <button type="button" class="btn btn-sm" id="presetSave">Сохранить как…</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="presetDelete">Удалить</button>
+          <button type="button" class="btn btn-sm btn-ghost" id="presetReset">Сбросить настройки</button>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <footer class="footer muted small">
+    Всё работает локально: видео не уходит в интернет — только в этот браузер или на ваш компьютер в домашней сети.
+  </footer>
+
+  <dialog id="phoneDialog" class="dialog" aria-labelledby="phoneTitle">
+    <h2 id="phoneTitle">Открыть на iPhone</h2>
+    <p class="small">iPhone и компьютер должны быть в одной Wi-Fi сети. Наведите камеру iPhone на код:</p>
+    <div id="qrBox" class="qr"></div>
+    <p id="phoneUrls" class="small"></p>
+    <form method="dialog"><button class="btn">Закрыть</button></form>
+  </dialog>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- рабочие медиа-элементы (не видны) -->
+  <div class="work-media" aria-hidden="true">
+    <video id="workVideo" playsinline preload="auto"></video>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
