@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { findBinary, probe, transcodeToH264 } from './media.js';
 import { sanitizeFileName } from '../public/js/core/util.js';
+import { startLocalProxy } from './local-proxy.js';
 
 const YTDLP = findBinary(process.env.YTDLP_PATH || 'yt-dlp');
 
@@ -51,6 +52,8 @@ const FORMAT =
   'b[vcodec^=avc1][height<=1080]/b[vcodec^=h264][height<=1080]/' +
   'bv*[height<=1080]+ba/b[height<=1080]/b';
 
+const DNS_ERROR = /Could not resolve host|Could not contact DNS|Unable to resolve|getaddrinfo|nodename nor servname|Name or service not known|Temporary failure in name resolution/i;
+
 function friendlyError(stderr) {
   const s = stderr || '';
   if (/Sign in to confirm|not a bot/i.test(s)) return 'YouTube просит подтвердить, что вы не робот. Обновите yt-dlp (yt-dlp -U или brew upgrade yt-dlp) и попробуйте ещё раз.';
@@ -60,7 +63,8 @@ function friendlyError(stderr) {
   if (/is live|live event|premieres in/i.test(s)) return 'Это прямая трансляция или премьера — дождитесь окончания.';
   if (/HTTP Error 403|Forbidden/i.test(s)) return 'Сайт не отдал видео (ошибка 403). Обычно помогает обновить yt-dlp: yt-dlp -U или brew upgrade yt-dlp';
   if (/HTTP Error 429|Too Many Requests/i.test(s)) return 'Слишком много запросов — сайт временно ограничил скачивание. Попробуйте через несколько минут.';
-  if (/Unable to resolve|getaddrinfo|Network is unreachable|timed out/i.test(s)) return 'Нет интернета на компьютере или сайт не отвечает.';
+  if (DNS_ERROR.test(s)) return 'Компьютер не может найти адрес сайта (DNS). Проверьте интернет; если включён VPN — переподключите его или выключите на время скачивания.';
+  if (/Network is unreachable|timed out/i.test(s)) return 'Нет интернета на компьютере или сайт не отвечает.';
   if (/Unsupported URL/i.test(s)) return 'По этой ссылке нет видео. Откройте видео и скопируйте ссылку ещё раз.';
   const last = s.trim().split('\n').filter((l) => /ERROR/.test(l)).pop() || s.trim().split('\n').pop() || '';
   return 'Не удалось скачать: ' + last.replace(/^ERROR:\s*/, '').slice(0, 300);
@@ -156,6 +160,17 @@ export async function downloadVideo(rawUrl, dir, { onProgress, signal } = {}) {
   if (r.code !== 0 && /no such option|unrecognized arguments/i.test(r.stderr)) {
     // старая версия yt-dlp без этих опций — пробуем без них
     r = await runYtDlp([...base, check.url], onLine, signal);
+  }
+  if (r.code !== 0 && !signal?.aborted && DNS_ERROR.test(r.stderr)) {
+    // встроенный в yt-dlp DNS-клиент не видит DNS от VPN — повторяем через локальный прокси,
+    // где имена разрешает Node.js (системный резолвер)
+    onProgress?.(0, 'Повторяю через системный DNS…');
+    const proxy = await startLocalProxy();
+    try {
+      r = await runYtDlp([...jsExtra, '--proxy', proxy.url, ...base, check.url], onLine, signal);
+    } finally {
+      proxy.close();
+    }
   }
   if (signal?.aborted) throw new Error('Отменено');
   if (r.code !== 0 || !file || !fs.existsSync(file)) throw new Error(friendlyError(r.stderr));

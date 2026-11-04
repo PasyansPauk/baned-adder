@@ -93,3 +93,23 @@ test('ffmpeg: хромакей убирает фон только у видео�
   assert.doesNotMatch(g.split(';')[0], /chromakey/); // основное видео не трогаем
   assert.doesNotMatch(graph({ ...spec, adVideos: [av] }), /chromakey/);
 });
+
+test('локальный прокси для yt-dlp: только 127.0.0.1 и только порты 80/443', async () => {
+  const { startLocalProxy } = await import('../server/local-proxy.js');
+  const net = await import('node:net');
+  const p = await startLocalProxy();
+  try {
+    const u = new URL(p.url);
+    assert.equal(u.hostname, '127.0.0.1');
+    const reply = await new Promise((resolve, reject) => {
+      const s = net.connect(Number(u.port), '127.0.0.1', () => s.write('CONNECT example.com:22 HTTP/1.1\r\nHost: example.com:22\r\n\r\n'));
+      let buf = '';
+      s.on('data', (d) => (buf += d));
+      s.on('close', () => resolve(buf));
+      s.on('error', reject);
+    });
+    assert.match(reply, /403/);
+  } finally {
+    p.close();
+  }
+});
