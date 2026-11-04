@@ -48,7 +48,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
     endCardText: 'Продолжение в части {next} →',
     endCardDur: 3,
     chroma: {
-      enabled: false, // убрать однотонный фон (зелёный экран) из ролика
+      enabled: false, // убрать фон из ролика
+      mode: 'ai', // 'ai' — нейросеть выделяет человека; 'color' — вырезать однотонный цвет (зелёный экран)
       color: '#00ff00', // цвет, который вырезаем
       similarity: 30, // насколько близкие оттенки вырезать, 1–100
       smooth: 10, // мягкость края, 0–100
@@ -126,6 +127,7 @@ export function normalizeSettings(input) {
       endCardDur: num(s.look.endCardDur, 1, 30, d.look.endCardDur),
       chroma: {
         enabled: bool(s.look.chroma?.enabled, d.look.chroma.enabled),
+        mode: ['ai', 'color'].includes(s.look.chroma?.mode) ? s.look.chroma.mode : d.look.chroma.mode,
         color: safeHexColor(s.look.chroma?.color, d.look.chroma.color),
         similarity: num(s.look.chroma?.similarity, 1, 100, d.look.chroma.similarity),
         smooth: num(s.look.chroma?.smooth, 0, 100, d.look.chroma.smooth),

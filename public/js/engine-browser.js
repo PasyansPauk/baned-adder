@@ -4,6 +4,7 @@
 import { blurRadius, fadeDuration, fitRect, layerAnim } from './core/layout.js';
 import { orderLayers } from './core/layers.js';
 import { BITMAP_KINDS } from './graphics.js';
+import { loadSegmenter, personMask } from './segment.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -58,6 +59,9 @@ export class BrowserEngine {
     this.freeze = document.createElement('canvas');
     this.tmp = document.createElement('canvas');
     this.key = document.createElement('canvas');
+    this.segIn = document.createElement('canvas');
+    this.segMask = document.createElement('canvas');
+    this.segmenter = null;
     this.audio = null;
     this.running = null;
   }
@@ -125,7 +129,34 @@ export class BrowserEngine {
       this.keyCtx = this.key.getContext('2d', { willReadFrequently: true });
     }
     const kctx = this.keyCtx || (this.keyCtx = this.key.getContext('2d', { willReadFrequently: true }));
+    if (c.mode === 'ai') {
+      // нейросеть: маска человека на уменьшенном кадре, затем растягиваем её на кадр (мягкий край)
+      kctx.globalCompositeOperation = 'copy';
+      kctx.drawImage(video, 0, 0, kw, kh);
+      if (!this.segmenter) {
+        kctx.globalCompositeOperation = 'source-over';
+        ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
+        return;
+      }
+      const sw2 = Math.min(512, kw);
+      const sh2 = Math.max(2, Math.round((sw2 * kh) / kw));
+      if (this.segIn.width !== sw2 || this.segIn.height !== sh2) {
+        this.segIn.width = sw2;
+        this.segIn.height = sh2;
+      }
+      this.segIn.getContext('2d').drawImage(video, 0, 0, sw2, sh2);
+      personMask(this.segmenter, this.segIn, this.segMask, { strength: c.similarity, smooth: c.smooth });
+      kctx.globalCompositeOperation = 'destination-in';
+      kctx.imageSmoothingEnabled = true;
+      kctx.imageSmoothingQuality = 'high';
+      kctx.drawImage(this.segMask, 0, 0, kw, kh);
+      kctx.globalCompositeOperation = 'source-over';
+      ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
+      return;
+    }
+    kctx.globalCompositeOperation = 'copy';
     kctx.drawImage(video, 0, 0, kw, kh);
+    kctx.globalCompositeOperation = 'source-over';
     const img = kctx.getImageData(0, 0, kw, kh);
     const d = img.data;
     const cb = (R, G, B) => -0.168736 * R - 0.331264 * G + 0.5 * B;
@@ -237,8 +268,15 @@ export class BrowserEngine {
     }
   }
 
+  /** Если включено удаление фона нейросетью — дожидаемся загрузки модели. */
+  async ensureSegmenter() {
+    const c = this.s?.look?.chroma;
+    if (c?.enabled && c.mode === 'ai' && !this.segmenter) this.segmenter = await loadSegmenter();
+  }
+
   /** Статичный кадр части в момент outT (для обложки превью). */
   async drawStill(part, outT) {
+    await this.ensureSegmenter();
     const seg = part.segments.find((s) => outT >= s.outStart && outT <= s.outEnd) || part.segments[0];
     if (seg.type === 'content') {
       await seekTo(this.video, seg.srcStart + (outT - seg.outStart));
@@ -265,6 +303,7 @@ export class BrowserEngine {
    */
   async play(part, { record = false, fromOut = 0, onTime, monitor = true } = {}) {
     if (this.running) throw new Error('Уже идёт воспроизведение');
+    await this.ensureSegmenter();
     const run = { stopped: false };
     this.running = run;
     const fps = this.s.look.fps;

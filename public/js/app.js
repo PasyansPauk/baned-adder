@@ -5,6 +5,7 @@ import { outputSize } from './core/layout.js';
 import { fillTemplate, fmtTime, parseTime, sanitizeFileName } from './core/util.js';
 import { LayerFactory } from './graphics.js';
 import { BrowserEngine, pickRecorderMime, seekTo } from './engine-browser.js';
+import { loadSegmenter } from './segment.js';
 import { analyzeInBrowser } from './analyze-browser.js';
 import {
   analyzeOnServer,
@@ -106,6 +107,9 @@ function activeEngine() {
   const want = state.settings.output.engine;
   const ok = !!state.server?.ffmpeg?.available;
   if (want === 'browser') return 'browser';
+  // нейросеть для удаления фона работает только в браузере
+  const c = state.settings.look.chroma;
+  if (c.enabled && c.mode === 'ai') return 'browser';
   return ok ? 'server' : 'browser';
 }
 
@@ -226,9 +230,21 @@ function detectChromaColor() {
 $('chromaPick').addEventListener('click', () => {
   if (!detectChromaColor()) toast('Сначала загрузите видео', true);
 });
-document.querySelector('[data-setting="look.chroma.enabled"]').addEventListener('change', (e) => {
-  if (e.target.checked) detectChromaColor();
-});
+for (const el of document.querySelectorAll('[data-setting^="look.chroma."]')) {
+  if (el.type !== 'checkbox' && el.type !== 'radio') continue;
+  el.addEventListener('change', () => {
+    const c = state.settings.look.chroma;
+    onEngineChanged();
+    if (!c.enabled) return;
+    if (c.mode === 'color' && el.dataset.setting === 'look.chroma.mode') detectChromaColor();
+    if (c.mode === 'ai') {
+      toast('Загружаю нейросеть для удаления фона…');
+      loadSegmenter()
+        .then(() => schedulePlan())
+        .catch((e) => toast(e.message, true));
+    }
+  });
+}
 
 $('lenChips').addEventListener('click', (e) => {
   const c = e.target.closest('[data-len]');

@@ -270,16 +270,20 @@
           <label for="accent">Акцентный цвет</label>
           <input type="color" id="accent" data-setting="look.accent">
         </div>
-        <label class="switch"><input type="checkbox" data-setting="look.chroma.enabled"><span>Убрать зелёный экран (хромакей)</span></label>
+        <label class="switch"><input type="checkbox" data-setting="look.chroma.enabled"><span>Убрать задний фон</span></label>
         <div class="dep" data-dep="look.chroma.enabled">
+          <fieldset class="segmented" aria-label="Как убирать фон">
+            <label><input type="radio" name="chromaMode" value="ai" data-setting="look.chroma.mode"><span>Нейросеть (человек)</span></label>
+            <label><input type="radio" name="chromaMode" value="color" data-setting="look.chroma.mode"><span>Зелёный экран</span></label>
+          </fieldset>
           <div class="grid-2">
-            <div class="field">
+            <div class="field dep" data-dep="look.chroma.mode=color">
               <label for="chromaColor">Цвет, который убрать</label>
               <input type="color" id="chromaColor" data-setting="look.chroma.color">
               <button type="button" class="btn btn-sm" id="chromaPick">Определить по краям кадра</button>
             </div>
             <div class="field">
-              <label for="chromaBg">Что показать вместо него</label>
+              <label for="chromaBg">Что показать вместо фона</label>
               <input type="color" id="chromaBg" data-setting="look.chroma.bg">
             </div>
           </div>
@@ -291,7 +295,8 @@
             <label for="chromaSmooth">Мягкость края: <output data-for="look.chroma.smooth"></output></label>
             <input type="range" id="chromaSmooth" min="0" max="100" step="1" data-setting="look.chroma.smooth">
           </div>
-          <small class="muted">Цвет фона подбирается по краям кадра автоматически. Если остаётся кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
+          <small class="muted dep" data-dep="look.chroma.mode=ai">Нейросеть находит человека в кадре и убирает всё остальное. Работает в браузере: рендер идёт в реальном времени, даже если сервер с ffmpeg запущен. При первом включении нужен интернет.</small>
+          <small class="muted dep" data-dep="look.chroma.mode=color">Для роликов, снятых на зелёном или синем фоне. Если остаётся кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
         </div>
         <label class="switch"><input type="checkbox" data-setting="look.partLabel"><span>Номер части в начале</span></label>
         <div class="grid-2 dep" data-dep="look.partLabel">

@@ -1,6 +1,6 @@
 // Service worker: приложение открывается без интернета (после первого запуска).
 // Стратегия «сначала сеть»: всегда свежая версия, а без сети — из кэша.
-const CACHE = 'baned-adder-v2';
+const CACHE = 'baned-adder-v3';
 const SHELL = [
   './',
   'index.html',
@@ -12,6 +12,7 @@ const SHELL = [
   'js/analyze-browser.js',
   'js/timeline.js',
   'js/qr.js',
+  'js/segment.js',
   'js/core/util.js',
   'js/core/settings.js',
   'js/core/plan.js',
