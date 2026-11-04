@@ -56,6 +56,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
     encoder: 'x264', // x264 | videotoolbox
     quality: 'high', // high | medium | small
     monitorAudio: true,
+    alsoSaveDownloaded: true, // при «Скачать и редактировать» ещё и сохранить файл в Загрузки
   },
 });
 
@@ -125,6 +126,7 @@ export function normalizeSettings(input) {
       encoder: pick(s.output.encoder, ['x264', 'videotoolbox'], d.output.encoder),
       quality: pick(s.output.quality, ['high', 'medium', 'small'], d.output.quality),
       monitorAudio: bool(s.output.monitorAudio, d.output.monitorAudio),
+      alsoSaveDownloaded: bool(s.output.alsoSaveDownloaded, d.output.alsoSaveDownloaded),
     },
   };
 }

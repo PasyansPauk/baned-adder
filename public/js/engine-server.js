@@ -155,3 +155,13 @@ export async function startRender({ sourceId, parts, encoder, quality }) {
 export function cancelJob(jobId) {
   return fetch(`api/jobs/${jobId}/cancel`, { method: 'POST' }).catch(() => {});
 }
+
+/**
+ * Скачивание видео по ссылке (YouTube/TikTok) на компьютере через yt-dlp.
+ * Возвращает { uploadId, name, title, size, info, url } — файл уже лежит на сервере.
+ */
+export async function fetchFromUrl(url, { onProgress, signal } = {}) {
+  const { jobId } = await api('api/fetch', { url });
+  const job = await pollJob(jobId, (j) => onProgress?.(j.progress, j.message), signal);
+  return job.result;
+}

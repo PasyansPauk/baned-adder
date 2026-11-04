@@ -1,10 +1,35 @@
 // Работа с ffmpeg/ffprobe: проверка наличия, probe, анализ (паузы + смены сцен), рендер частей.
 import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
 import { LoudnessMeter, detectSilences } from '../public/js/core/audio.js';
-import { buildFfmpegArgs } from './ffmpeg-graph.js';
+import { buildFfmpegArgs, encoderArgs } from './ffmpeg-graph.js';
 
-const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
-const FFPROBE = process.env.FFPROBE_PATH || 'ffprobe';
+/**
+ * Полный путь к программе. Кроме PATH смотрим папки Homebrew: при запуске двойным кликом
+ * (start.command) PATH бывает урезанным, и brew-программы иначе «не находятся».
+ */
+export function findBinary(name) {
+  if (name.includes('/') || name.includes('\\')) return name;
+  const dirs = [...(process.env.PATH || '').split(path.delimiter), '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'];
+  const exts = process.platform === 'win32' ? ['.exe', '.cmd', ''] : [''];
+  for (const d of dirs) {
+    if (!d) continue;
+    for (const e of exts) {
+      const full = path.join(d, name + e);
+      try {
+        fs.accessSync(full, fs.constants.X_OK);
+        return full;
+      } catch {
+        /* нет здесь */
+      }
+    }
+  }
+  return name;
+}
+
+const FFMPEG = findBinary(process.env.FFMPEG_PATH || 'ffmpeg');
+const FFPROBE = findBinary(process.env.FFPROBE_PATH || 'ffprobe');
 
 export function detectFfmpeg() {
   try {
@@ -47,6 +72,7 @@ export function probe(file) {
           height: swap ? v?.width : v?.height,
           hasVideo: !!v,
           hasAudio: !!a,
+          videoCodec: v?.codec_name || null,
         });
       } catch (e) {
         reject(e);
@@ -159,5 +185,33 @@ export function renderPart(spec, io, onProgress, signal) {
       if (code === 0) resolve();
       else reject(new Error(signal?.aborted ? 'Отменено' : 'ffmpeg завершился с ошибкой:\n' + tail.trim().split('\n').slice(-6).join('\n')));
     });
+  });
+}
+
+/** Перекодирование в H.264/AAC MP4 (для видео в VP9/AV1/HEVC, скачанных по ссылке). */
+export function transcodeToH264(input, output, duration, onProgress, signal) {
+  return new Promise((resolve, reject) => {
+    const args = [
+      '-hide_banner', '-nostdin', '-y', '-i', input,
+      '-map', '0:v:0', '-map', '0:a:0?',
+      ...encoderArgs('x264', 'high'),
+      '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart',
+      '-progress', 'pipe:1', '-nostats', output,
+    ];
+    const p = spawn(FFMPEG, args, { signal });
+    let buf = '';
+    let tail = '';
+    p.stdout.on('data', (d) => {
+      buf += d;
+      const lines = buf.split('\n');
+      buf = lines.pop();
+      for (const line of lines) {
+        const m = line.match(/^out_time_us=(\d+)/);
+        if (m && duration) onProgress?.(Math.min(1, Number(m[1]) / 1e6 / duration));
+      }
+    });
+    p.stderr.on('data', (d) => (tail = (tail + d).slice(-2000)));
+    p.on('error', reject);
+    p.on('close', (code) => (code === 0 ? resolve() : reject(new Error('Не удалось перекодировать видео: ' + tail.trim().split('\n').pop()))));
   });
 }
