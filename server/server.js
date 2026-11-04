@@ -318,7 +318,7 @@ async function route(req, res) {
       });
     }
     if (!ffmpeg.available && p !== '/api/status') {
-      return send(res, 503, { error: 'ffmpeg не найден. Установите: brew install ffmpeg' });
+      return send(res, 503, { error: 'ffmpeg не найден. Установка описана в README (Homebrew, MacPorts или готовый файл)' });
     }
     if (p === '/api/upload' && req.method === 'POST') return handleUpload(req, res, url);
 
@@ -341,7 +341,7 @@ async function route(req, res) {
     if (p === '/api/fetch' && req.method === 'POST') {
       const body = await readJson(req, 64 * 1024);
       if (!ytdlp.available) ytdlp = detectYtDlp();
-      if (!ytdlp.available) return send(res, 503, { error: 'На компьютере не установлен yt-dlp. Выполните в Терминале: brew install yt-dlp' });
+      if (!ytdlp.available) return send(res, 503, { error: 'На компьютере не установлен yt-dlp. Установка описана в README (Homebrew, MacPorts или готовый файл)' });
       const check = checkVideoUrl(body.url);
       if (!check.ok) return send(res, 400, { error: check.error });
       const job = createJob('download', { site: check.site });
@@ -451,12 +451,12 @@ server.listen(PORT, HOST, () => {
     ffmpeg.available
       ? `  ffmpeg ${ffmpeg.version}: быстрый рендер включён` +
           (ffmpeg.encoders?.videotoolbox ? ' (+ аппаратный VideoToolbox)' : '')
-      : '  ffmpeg не найден — доступен только рендер в браузере.\n  Установите: brew install ffmpeg'
+      : '  ffmpeg не найден — доступен только рендер в браузере.\n  Установка описана в README (Homebrew, MacPorts или готовый файл)'
   );
   console.log(
     ytdlp.available
       ? `  yt-dlp ${ytdlp.version}: скачивание по ссылкам YouTube/TikTok включено`
-      : '  yt-dlp не найден — скачивание по ссылкам выключено.\n  Установите: brew install yt-dlp'
+      : '  yt-dlp не найден — скачивание по ссылкам выключено.\n  Установка описана в README'
   );
   console.log(`  Временные файлы: ${WORKSPACE} (удаляются через ${KEEP_HOURS} ч)`);
   console.log(`  Остановить: Ctrl+C\n${line}\n`);
