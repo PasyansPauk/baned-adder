@@ -372,7 +372,18 @@ async function probeVideo(file) {
     if (!file.remote) URL.revokeObjectURL(url);
     throw new Error(`${file.name}: ${e.message}`);
   }
-  const v = { id: ++videoSeq, file, url, duration: el.duration, width: el.videoWidth, height: el.videoHeight, analysis: null, analysisNote: '' };
+  const v = {
+    id: ++videoSeq,
+    file,
+    url,
+    duration: el.duration,
+    width: el.videoWidth,
+    height: el.videoHeight,
+    analysis: null,
+    analysisNote: '',
+    // название для подписей: у скачанного по ссылке — заголовок ролика, иначе имя файла
+    title: (file.title || file.name.replace(/\.[^.]+$/, '')).replace(/[_]+/g, ' ').trim(),
+  };
   el.removeAttribute('src');
   el.load();
   if (file.remote) {
@@ -437,6 +448,7 @@ async function replaceVideo(files) {
 }
 
 function disposeVideo(v) {
+  v.analysisCtl?.abort();
   v.uploadCtl?.abort();
   if (!v.file.remote) URL.revokeObjectURL(v.url);
   // скачанное по ссылке не удаляем: его ещё можно сохранить в Загрузки (сервер сам почистит позже)
@@ -482,7 +494,6 @@ async function activateVideo(v) {
     renderVideoList();
     return true;
   }
-  stopAnalysis();
   state.video = v;
   const work = $('workVideo');
   work.src = v.url;
@@ -506,8 +517,11 @@ async function activateVideo(v) {
   await seekTo(work, Math.min(1, v.duration / 2));
   schedulePlan(0);
   if (activeEngine() === 'server') ensureSourceUploaded(v).catch(() => {});
+  setProgress($('analysisProgress'), null);
+  $('analyzeCancel').hidden = !v.analysisCtl;
   if (v.analysis) $('analysisState').textContent = v.analysisNote;
-  else startAnalysis();
+  else if (v.analysisCtl) $('analysisState').textContent = 'Ищу паузы в речи и смены сцен…';
+  else analyzeVideo(v);
   return true;
 }
 
@@ -524,7 +538,7 @@ function renderVideoList() {
     li.setAttribute('aria-current', v === state.video ? 'true' : 'false');
     const done = state.results.filter((r) => r.videoId === v.id).length;
     li.innerHTML = `<span class="num">${i + 1}</span><div class="grow"><div class="ellipsis">${esc(v.file.name)}</div>
-      <div class="muted small">${fmtTime(v.duration)} · ${v.width}×${v.height}${done ? ` · готово частей: ${done}` : ''}</div></div>
+      <div class="muted small">${fmtTime(v.duration)} · ${v.width}×${v.height}${v.analysisCtl ? ' · анализ…' : ''}${done ? ` · готово частей: ${done}` : ''}</div></div>
       <button type="button" class="btn btn-sm btn-ghost" aria-label="Убрать видео ${esc(v.file.name)}">Убрать</button>`;
     li.querySelector('button').addEventListener('click', (e) => {
       e.stopPropagation();
@@ -540,6 +554,7 @@ function renderVideoList() {
     });
     ul.appendChild(li);
   });
+  renderCaptions();
 }
 
 // ------------------------------------------------------------ скачивание по ссылке
@@ -616,7 +631,7 @@ function renderLinkResult(r, { edited }) {
 }
 
 function openDownloaded(r) {
-  return loadVideo({ remote: true, name: r.name, size: r.size, url: r.url, uploadId: r.uploadId });
+  return loadVideo({ remote: true, name: r.name, title: r.title, size: r.size, url: r.url, uploadId: r.uploadId });
 }
 
 async function downloadByLink(mode) {
@@ -797,66 +812,97 @@ function renderBanners() {
 // ------------------------------------------------------------ анализ
 
 function stopAnalysis() {
-  state.analysisCtl?.abort();
-  state.analysisCtl = null;
+  const v = state.video;
+  if (!v?.analysisCtl) return;
+  v.analysisSkip = true; // отменили вручную — очередь сама его не перезапустит
+  v.analysisCtl.abort();
 }
 
-function startAnalysis() {
-  if (!state.video) return Promise.resolve();
-  stopAnalysis();
-  const p = runAnalysis();
-  state.video.analysisPromise = p;
+/** Анализ пауз и смен сцен для видео v. У каждого видео свой; повторный вызов возвращает тот же промис. */
+function analyzeVideo(v, { force = false } = {}) {
+  if (!v) return Promise.resolve();
+  if (!force && (v.analysis || v.analysisCtl)) return v.analysisPromise || Promise.resolve();
+  v.analysisCtl?.abort();
+  const ctl = new AbortController();
+  v.analysisCtl = ctl;
+  v.analysisSkip = false;
+  const p = runAnalysis(v, ctl).finally(() => {
+    if (v.analysisCtl === ctl) v.analysisCtl = null;
+    updateButtons();
+    renderVideoList();
+    setTimeout(analyzeQueue, 0);
+  });
+  v.analysisPromise = p;
+  updateButtons();
+  renderVideoList();
   return p;
 }
 
-async function runAnalysis() {
-  const ctl = new AbortController();
-  state.analysisCtl = ctl;
-  const v = state.video;
+/** Фоновая очередь: по одному анализирует видео, которые ещё не проанализированы (чтобы у всех был точный план). */
+function analyzeQueue() {
+  if (state.videos.some((v) => v.analysisCtl)) return;
+  // браузерный рендер идёт в реальном времени — не мешаем ему тяжёлым анализом
+  if (state.renderCtl && activeEngine() === 'browser') return;
+  const next = state.videos.find((v) => !v.analysis && !v.analysisSkip);
+  if (next) analyzeVideo(next);
+}
+
+function startAnalysis() {
+  return analyzeVideo(state.video, { force: true });
+}
+
+async function runAnalysis(v, ctl) {
+  const ui = () => state.video === v;
   const st = $('analysisState');
   const bar = $('analysisProgress');
-  $('analyzeCancel').hidden = false;
-  updateButtons();
+  const say = (t) => ui() && (st.textContent = t);
+  const prog = (p) => ui() && setProgress(bar, p);
+  if (ui()) $('analyzeCancel').hidden = false;
   try {
     let result;
     if (activeEngine() === 'server') {
-      st.textContent = 'Передаю видео на компьютер для анализа…';
-      setProgress(bar, 0);
-      const id = await ensureSourceUploaded();
-      st.textContent = 'Ищу паузы в речи и смены сцен (ffmpeg)…';
-      result = await analyzeOnServer(id, { signal: ctl.signal, onProgress: (p) => setProgress(bar, p) });
+      say('Передаю видео на компьютер для анализа…');
+      prog(0);
+      const id = await ensureSourceUploaded(v);
+      if (!id) throw new DOMException('Отменено', 'AbortError');
+      say('Ищу паузы в речи и смены сцен (ffmpeg)…');
+      result = await analyzeOnServer(id, { signal: ctl.signal, onProgress: prog });
     } else {
-      st.textContent = 'Ищу паузы в речи и смены сцен…';
-      setProgress(bar, 0);
+      say('Ищу паузы в речи и смены сцен…');
+      prog(0);
       let file = v.file;
       if (file.remote) {
-        st.textContent = 'Получаю видео с компьютера для анализа…';
+        say('Получаю видео с компьютера для анализа…');
         const blob = await (await fetch(file.url, { signal: ctl.signal })).blob();
         file = new File([blob], file.name, { type: blob.type || 'video/mp4' });
       }
       result = await analyzeInBrowser(file, v.url, v.duration, {
         signal: ctl.signal,
         onProgress: (p, label) => {
-          setProgress(bar, p);
-          st.textContent = `Анализ: ${label} ${Math.round(p * 100)}%`;
+          prog(p);
+          say(`Анализ: ${label} ${Math.round(p * 100)}%`);
         },
       });
     }
+    if (!state.videos.includes(v)) return;
     v.analysis = result;
     v.analysisNote = `Найдено пауз: ${result.silences.length}, смен сцен: ${result.scenes.length}.` + (result.note ? ` ${result.note}` : '');
-    if (state.video !== v) return;
+    renderCaptions();
+    if (!ui()) return;
     state.analysis = result;
     st.textContent = v.analysisNote;
     schedulePlan(0);
   } catch (e) {
-    if (state.video !== v) return;
+    if (isAbort(e)) v.analysisPromise = null;
+    else v.analysisSkip = true; // не повторяем по кругу; кнопка «Найти паузы и сцены» запустит заново
+    if (!ui()) return;
     if (isAbort(e)) st.textContent = 'Анализ отменён — нарезка по ровному времени.';
     else st.textContent = 'Анализ не удался: ' + e.message + ' Нарезка по ровному времени.';
   } finally {
-    if (state.analysisCtl === ctl) state.analysisCtl = null;
-    setProgress(bar, null);
-    $('analyzeCancel').hidden = true;
-    updateButtons();
+    if (ui()) {
+      setProgress(bar, null);
+      $('analyzeCancel').hidden = true;
+    }
   }
 }
 
@@ -873,6 +919,7 @@ function schedulePlan(delay = 150) {
 
 function rebuildPlan() {
   if (!state.video) {
+    renderCaptions();
     updateButtons();
     return;
   }
@@ -1034,7 +1081,9 @@ function updateButtons() {
   $('previewAd').disabled = !hasPlan || rendering || !state.plan?.parts[state.selected]?.ads.length;
   $('renderAll').disabled = !hasPlan || rendering || !!batchRun;
   $('renderEvery').disabled = !state.videos.length || rendering || !!batchRun;
-  $('analyzeBtn').disabled = !state.video || !!state.analysisCtl || rendering;
+  $('analyzeBtn').disabled = !state.video || !!state.video.analysisCtl || rendering;
+  $('renderAll').textContent = state.videos.length > 1 ? 'Создать части этого видео' : 'Создать все части';
+  $('renderAll').classList.toggle('btn-primary', state.videos.length < 2);
   document.querySelectorAll('[data-act="render"]').forEach((b) => (b.disabled = rendering));
 }
 
@@ -1146,7 +1195,7 @@ $('renderEvery').addEventListener('click', async () => {
       $('renderState').textContent = `Видео ${i + 1} из ${list.length}: ${v.file.name} — готовлю план…`;
       if (!(await activateVideo(v))) continue;
       // ждём поиск пауз, чтобы части резались по паузам, как при ручном рендере
-      await v.analysisPromise?.catch(() => {});
+      await analyzeVideo(v).catch(() => {});
       if (run.cancelled) break;
       clearTimeout(planTimer);
       rebuildPlan();
@@ -1300,25 +1349,63 @@ async function renderInBrowser(parts, ctl, st, bar) {
 
 // ------------------------------------------------------------ подписи
 
-function renderCaptions() {
-  const parts = state.plan?.parts || [];
-  const s = state.settings.output;
-  const title = s.title.trim() || (state.video ? state.video.file.name.replace(/\.[^.]+$/, '') : '');
-  $('captionList').innerHTML = parts
-    .map((p, i) => {
-      const text = fillTemplate(s.caption, { title, n: i + 1, total: p.total, next: i + 2, prev: i });
-      return `<li><div><pre>${esc(text)}</pre><button type="button" class="btn btn-sm" data-copy="${i}" aria-label="Скопировать подпись части ${i + 1}">Копировать</button></div></li>`;
-    })
-    .join('');
+/** План видео: у активного — текущий, у остальных считается по их анализу (быстро, без превью). */
+function planFor(v) {
+  if (v === state.video && state.plan) return state.plan;
+  return buildPlan({
+    duration: v.duration,
+    analysis: v.analysis,
+    settings: state.settings,
+    banners: state.banners.map((b) => ({ kind: b.kind, duration: b.duration })),
+  });
 }
 
-$('captionList').addEventListener('click', async (e) => {
-  const b = e.target.closest('[data-copy]');
-  if (!b) return;
-  const text = b.parentElement.querySelector('pre').textContent;
+function captionText(v, p, i) {
+  return fillTemplate(state.settings.output.caption, { title: v.title, n: i + 1, total: p.total, next: i + 2, prev: i });
+}
+
+/** Подписи: для каждого видео своё название и подпись к каждой его части. */
+function renderCaptions() {
+  const box = $('captionList');
+  const multi = state.videos.length > 1;
+  // если пользователь сейчас печатает название — вернём ему фокус и курсор после перерисовки
+  const focused = box.contains(document.activeElement) ? document.activeElement : null;
+  const keep = focused?.dataset.videoTitle ? { id: focused.id, a: focused.selectionStart, b: focused.selectionEnd } : null;
+  box.innerHTML = state.videos
+    .map((v, vi) => {
+      const parts = planFor(v).parts;
+      const items = parts
+        .map(
+          (p, i) => `<li><div><pre>${esc(captionText(v, p, i))}</pre>
+            <button type="button" class="btn btn-sm" data-copy aria-label="Скопировать подпись части ${i + 1}">Копировать</button></div></li>`
+        )
+        .join('');
+      const head = multi ? `<div class="caption-head"><b>Видео ${vi + 1}</b> <span class="muted small ellipsis">${esc(v.file.name)}</span></div>` : '';
+      const pending = !v.analysis ? '<p class="muted small">Число частей уточнится после поиска пауз.</p>' : '';
+      return `<section class="caption-video" data-video="${v.id}">
+          ${head}
+          <div class="field">
+            <label for="vtitle${v.id}">Название${multi ? ` видео ${vi + 1}` : ''}</label>
+            <input type="text" id="vtitle${v.id}" data-video-title="${v.id}" value="${esc(v.title)}" placeholder="Например: Как я переехал в Сочи">
+          </div>
+          <ol class="caption-list">${items}</ol>
+          ${pending}
+          ${parts.length > 1 ? '<button type="button" class="btn btn-sm" data-copy-all>Копировать все подписи этого видео</button>' : ''}
+        </section>`;
+    })
+    .join('');
+  if (keep) {
+    const el = document.getElementById(keep.id);
+    if (el) {
+      el.focus();
+      el.setSelectionRange(keep.a, keep.b);
+    }
+  }
+}
+
+async function copyText(text) {
   try {
     await navigator.clipboard.writeText(text);
-    toast('Подпись скопирована');
   } catch {
     const ta = document.createElement('textarea');
     ta.value = text;
@@ -1326,7 +1413,30 @@ $('captionList').addEventListener('click', async (e) => {
     ta.select();
     document.execCommand('copy');
     ta.remove();
+  }
+}
+
+$('captionList').addEventListener('input', (e) => {
+  const id = e.target.dataset?.videoTitle;
+  if (!id) return;
+  const v = state.videos.find((x) => String(x.id) === id);
+  if (!v) return;
+  v.title = e.target.value;
+  // обновляем только тексты этого видео — поле ввода не теряет фокус
+  const parts = planFor(v).parts;
+  e.target.closest('.caption-video').querySelectorAll('pre').forEach((pre, i) => parts[i] && (pre.textContent = captionText(v, parts[i], i)));
+});
+
+$('captionList').addEventListener('click', async (e) => {
+  const one = e.target.closest('[data-copy]');
+  const all = e.target.closest('[data-copy-all]');
+  if (one) {
+    await copyText(one.parentElement.querySelector('pre').textContent);
     toast('Подпись скопирована');
+  } else if (all) {
+    const texts = [...all.closest('.caption-video').querySelectorAll('pre')].map((p) => p.textContent);
+    await copyText(texts.join('\n\n———\n\n'));
+    toast(`Скопировано подписей: ${texts.length}`);
   }
 });
 

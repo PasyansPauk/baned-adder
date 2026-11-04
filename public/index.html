@@ -419,14 +419,11 @@
       <section class="card" aria-labelledby="hCaptions">
         <h2 id="hCaptions">Подписи для публикации</h2>
         <div class="field">
-          <label for="title">Название</label>
-          <input type="text" id="title" data-setting="output.title" placeholder="Например: Как я переехал в Сочи">
+          <label for="caption">Шаблон подписи — общий для всех видео</label>
+          <textarea id="caption" rows="3" data-setting="output.caption" aria-describedby="captionHint"></textarea>
+          <small class="muted" id="captionHint">{title} — название видео (задаётся ниже для каждого), {n} — номер части, {total} — всего частей, {prev}/{next} — соседние части</small>
         </div>
-        <div class="field">
-          <label for="caption">Шаблон подписи</label>
-          <textarea id="caption" rows="3" data-setting="output.caption"></textarea>
-        </div>
-        <ol id="captionList" class="caption-list"></ol>
+        <div id="captionList"></div>
       </section>
       <section class="card" aria-labelledby="hPresets">
         <h2 id="hPresets">Пресеты</h2>
