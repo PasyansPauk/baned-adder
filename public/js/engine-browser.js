@@ -145,7 +145,14 @@ export class BrowserEngine {
         this.segIn.height = sh2;
       }
       this.segIn.getContext('2d').drawImage(video, 0, 0, sw2, sh2);
-      personMask(this.segmenter, this.segIn, this.segMask, { strength: c.similarity, smooth: c.smooth });
+      const cover = personMask(this.segmenter, this.segIn, this.segMask, { strength: c.similarity, smooth: c.smooth });
+      // человека в кадре нет (карточки, текст, заставки) — показываем кадр целиком;
+      // гистерезис, чтобы не мигало на границе
+      this.segHasPerson = this.segHasPerson ? cover > 0.035 : cover > 0.06;
+      if (!this.segHasPerson) {
+        ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
+        return;
+      }
       kctx.globalCompositeOperation = 'destination-in';
       kctx.imageSmoothingEnabled = true;
       kctx.imageSmoothingQuality = 'high';

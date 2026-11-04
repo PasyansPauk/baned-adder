@@ -41,6 +41,7 @@ export function loadSegmenter() {
  * @param {HTMLCanvasElement} input — уменьшенный кадр
  * @param {HTMLCanvasElement} out — сюда кладётся маска
  * @param {{strength:number, smooth:number}} o — сила (1–100) и мягкость края (0–100)
+ * @returns {number} доля кадра, занятая человеком (0–1)
  */
 export function personMask(seg, input, out, o) {
   const w = input.width;
@@ -62,12 +63,16 @@ export function personMask(seg, input, out, o) {
     // порог: чем больше сила, тем больше вырезаем (сомнительные пиксели уходят в фон)
     const thr = 0.2 + (Math.min(100, Math.max(1, o.strength)) / 100) * 0.6;
     const soft = 0.02 + (Math.min(100, Math.max(0, o.smooth)) / 100) * 0.3;
-    for (let i = 0, n = w * h; i < n; i++) {
+    let sum = 0;
+    const n = w * h;
+    for (let i = 0; i < n; i++) {
       const p = person ? conf[i] : 1 - conf[i];
       const a = Math.min(1, Math.max(0, (p - (thr - soft / 2)) / soft));
+      sum += a;
       d[i * 4 + 3] = Math.round(a * 255);
     }
     octx.putImageData(img, 0, 0);
+    return sum / n;
   } finally {
     res.close?.();
   }

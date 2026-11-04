@@ -295,7 +295,7 @@
             <label for="chromaSmooth">Мягкость края: <output data-for="look.chroma.smooth"></output></label>
             <input type="range" id="chromaSmooth" min="0" max="100" step="1" data-setting="look.chroma.smooth">
           </div>
-          <small class="muted dep" data-dep="look.chroma.mode=ai">Нейросеть находит человека в кадре и убирает всё остальное. Работает в браузере: рендер идёт в реальном времени, даже если сервер с ffmpeg запущен. При первом включении нужен интернет.</small>
+          <small class="muted dep" data-dep="look.chroma.mode=ai">Нейросеть находит человека (или нарисованного персонажа) и убирает всё остальное. Кадры без человека — карточки, текст, заставки — остаются целиком. Работает в браузере: рендер идёт в реальном времени, даже если сервер с ffmpeg запущен. При первом включении нужен интернет.</small>
           <small class="muted dep" data-dep="look.chroma.mode=color">Для роликов, снятых на зелёном или синем фоне. Если остаётся кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
         </div>
         <label class="switch"><input type="checkbox" data-setting="look.partLabel"><span>Номер части в начале</span></label>
