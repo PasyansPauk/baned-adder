@@ -26,6 +26,21 @@ const JOBS_DIR = path.join(WORKSPACE, 'jobs');
 const KEEP_HOURS = Number(process.env.KEEP_HOURS) || 24;
 const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_GB) || 20) * 1024 ** 3;
 
+// Что умеет этот сервер — приложение проверяет перед рендером.
+const FEATURES = ['adChroma'];
+
+// Отпечаток кода сервера на момент запуска: если файлы обновили (git pull), а сервер не перезапустили,
+// он продолжает работать по старому коду — сообщаем об этом приложению.
+function codeStamp() {
+  const h = crypto.createHash('sha1');
+  for (const dir of ['server', 'public/js/core']) {
+    const abs = path.join(ROOT, dir);
+    for (const f of fs.readdirSync(abs).filter((x) => x.endsWith('.js')).sort()) h.update(f).update(fs.readFileSync(path.join(abs, f)));
+  }
+  return h.digest('hex');
+}
+const STARTED_STAMP = codeStamp();
+
 const ffmpeg = detectFfmpeg();
 let ytdlp = detectYtDlp();
 const jobs = new Map();
@@ -315,6 +330,8 @@ async function route(req, res) {
         ytdlp,
         lanUrls: lanUrls(),
         platform: process.platform,
+        features: FEATURES,
+        stale: codeStamp() !== STARTED_STAMP,
       });
     }
     if (!ffmpeg.available && p !== '/api/status') {

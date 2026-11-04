@@ -238,6 +238,12 @@ async function detectServer() {
     badge.className = 'badge info';
     badge.title = 'Сервер не найден — всё делается прямо в браузере';
   }
+  if (state.server?.stale || (state.server && !state.server.features?.includes('adChroma'))) {
+    badge.textContent = 'Перезапустите сервер';
+    badge.className = 'badge warn';
+    badge.title = 'Код программы обновился, а сервер работает по старой версии';
+    toast('Программа обновилась, а сервер ещё старый: закройте окно Терминала с сервером и снова запустите start.command, затем обновите страницу', true);
+  }
   updateLinkBox();
   $('phoneBtn').hidden = !(state.server?.lanUrls?.length && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname));
   const vt = state.server?.ffmpeg?.encoders?.videotoolbox;
@@ -1225,6 +1231,10 @@ function batchPrefix() {
 }
 
 async function renderOnServer(parts, ctl, st, bar) {
+  const fresh = await getServerStatus();
+  if (state.settings.ads.chroma.enabled && !fresh?.features?.includes('adChroma')) {
+    throw new Error('сервер запущен со старой версией программы и не умеет убирать зелёный фон. Закройте окно Терминала с сервером, снова запустите start.command и обновите страницу.');
+  }
   await ensureKeyColors();
   st.textContent = 'Передаю видео на компьютер…';
   const sourceId = await ensureSourceUploaded();

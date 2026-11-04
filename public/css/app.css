@@ -64,6 +64,7 @@ p { margin: 8px 0; }
   white-space: nowrap;
 }
 .badge.ok { color: var(--ok); border-color: rgba(52, 199, 123, 0.4); }
+.badge.warn { color: var(--warn); border-color: rgba(255, 176, 32, 0.5); }
 .badge.info { color: var(--info); border-color: rgba(76, 157, 255, 0.4); }
 
 /* ---------- раскладка ---------- */
