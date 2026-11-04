@@ -75,7 +75,8 @@ p { margin: 8px 0; }
 .col-settings, .col-result { display: flex; flex-direction: column; gap: var(--gap); min-width: 0; }
 @media (min-width: 980px) {
   .layout { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
-  .sticky-card { position: sticky; top: 76px; z-index: 5; }
+  /* превью не закрепляем: иначе оно наезжает на карточки ниже в той же колонке */
+  .sticky-card { position: static; }
 }
 
 .card {
