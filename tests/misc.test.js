@@ -79,16 +79,17 @@ test('ffmpeg: команда собирается и не содержит ли�
   assert.throws(() => buildFfmpegArgs({ W: 'x', H: 2, duration: 1, srcStart: 0, srcEnd: 1, segments: [{}] }, {}));
 });
 
-test('ffmpeg: хромакей добавляет фильтр chromakey и фон', () => {
+test('ffmpeg: хромакей убирает фон только у видеобаннера', () => {
+  const av = { file: 'ad', x: 100, y: 600, w: 880, h: 496, start: 10, end: 20, fade: 0.4, slide: 0, audioSeg: -1 };
   const spec = {
-    W: 1080, H: 1920, fps: 30, fit: 'blur', srcStart: 0, srcEnd: 60, duration: 60,
-    chroma: { color: '#00ff00', bg: '#000000', similarity: 30, smooth: 10 },
-    segments: [{ type: 'content', start: 0, end: 60 }],
+    W: 1080, H: 1920, fps: 30, fit: 'blur', srcStart: 0, srcEnd: 60, duration: 70,
+    segments: [{ type: 'content', start: 0, end: 10 }, { type: 'freeze', t: 10, dur: 10, blur: 0, dim: 0 }, { type: 'content', start: 10, end: 60 }],
+    adVideos: [{ ...av, chroma: { color: '#00b140', similarity: 30, smooth: 10 } }],
   };
   const io = { src: 'in.mp4', output: 'out.mp4', resolve: (x) => x, srcHasAudio: true, adHasAudio: () => false, encoder: 'x264', quality: 'high' };
-  const g = buildFfmpegArgs(spec, io)[buildFfmpegArgs(spec, io).indexOf('-filter_complex') + 1];
-  assert.match(g, /chromakey=color=0x00ff00/);
-  assert.match(g, /overlay=\(W-w\)\/2:\(H-h\)\/2:shortest=1/);
-  const plain = buildFfmpegArgs({ ...spec, chroma: null }, io).join(' ');
-  assert.doesNotMatch(plain, /chromakey/);
+  const graph = (sp) => { const a = buildFfmpegArgs(sp, io); return a[a.indexOf('-filter_complex') + 1]; };
+  const g = graph(spec);
+  assert.match(g, /\[1:v\][^;]*format=yuva420p,chromakey=color=0x00b140:similarity=0\.15:blend=0\.05/);
+  assert.doesNotMatch(g.split(';')[0], /chromakey/); // основное видео не трогаем
+  assert.doesNotMatch(graph({ ...spec, adVideos: [av] }), /chromakey/);
 });

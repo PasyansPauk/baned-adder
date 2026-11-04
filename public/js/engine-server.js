@@ -107,7 +107,6 @@ export async function buildServerSpecs(plan, parts, { factory, banners, W, H, se
       H,
       fps: settings.look.fps,
       fit: settings.look.fit,
-      chroma: settings.look.chroma.enabled ? { ...settings.look.chroma } : null,
       accent: settings.look.accent,
       srcStart: part.srcStart,
       srcEnd: part.srcEnd,
@@ -137,6 +136,9 @@ export async function buildServerSpecs(plan, parts, { factory, banners, W, H, se
           fade: F,
           slide,
           audioSeg: settings.ads.mode === 'pause' && settings.ads.adAudio ? segIndex : -1,
+          chroma: settings.ads.chroma.enabled
+            ? { ...settings.ads.chroma, color: (settings.ads.chroma.auto && b.keyColor) || settings.ads.chroma.color }
+            : null,
         });
       } else if (layer.kind === 'progress') {
         spec.progress.push({ ...factory.progressRect(layer.banner), start: layer.start, end: layer.end, fade: F });

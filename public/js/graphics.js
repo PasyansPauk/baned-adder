@@ -152,15 +152,19 @@ export class LayerFactory {
     const c = makeCanvas(r.w + m * 2, r.h + m * 2);
     const ctx = c.getContext('2d');
     const isVideo = b?.kind === 'video';
+    const keyed = isVideo && s.ads.chroma?.enabled;
     const radius = isVideo ? 0 : Math.round(Math.min(r.w, r.h) * 0.05);
-    ctx.save();
-    ctx.shadowColor = 'rgba(0,0,0,0.5)';
-    ctx.shadowBlur = m * 0.9;
-    ctx.shadowOffsetY = m * 0.25;
-    roundRectPath(ctx, m, m, r.w, r.h, radius);
-    ctx.fillStyle = '#111';
-    ctx.fill();
-    ctx.restore();
+    if (!keyed) {
+      // с вырезанным фоном баннер лежит прямо на ролике — без подложки и тени
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,0.5)';
+      ctx.shadowBlur = m * 0.9;
+      ctx.shadowOffsetY = m * 0.25;
+      roundRectPath(ctx, m, m, r.w, r.h, radius);
+      ctx.fillStyle = '#111';
+      ctx.fill();
+      ctx.restore();
+    }
     if (isVideo) {
       // «окно» под видео: само видео рисуется слоем ниже
       ctx.clearRect(m, m, r.w, r.h);

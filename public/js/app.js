@@ -5,7 +5,6 @@ import { outputSize } from './core/layout.js';
 import { fillTemplate, fmtTime, parseTime, sanitizeFileName } from './core/util.js';
 import { LayerFactory } from './graphics.js';
 import { BrowserEngine, pickRecorderMime, seekTo } from './engine-browser.js';
-import { loadSegmenter } from './segment.js';
 import { analyzeInBrowser } from './analyze-browser.js';
 import {
   analyzeOnServer,
@@ -111,9 +110,6 @@ function activeEngine() {
   const want = state.settings.output.engine;
   const ok = !!state.server?.ffmpeg?.available;
   if (want === 'browser') return 'browser';
-  // нейросеть для удаления фона работает только в браузере
-  const c = state.settings.look.chroma;
-  if (c.enabled && c.mode === 'ai') return 'browser';
   return ok ? 'server' : 'browser';
 }
 
@@ -199,55 +195,6 @@ for (const el of settingEls) {
     if (el.dataset.setting === 'output.engine') onEngineChanged();
   });
   if (el.type === 'number') el.addEventListener('blur', () => (el.value = getPath(state.settings, el.dataset.setting)));
-}
-
-/** Определяет цвет фона по краям текущего кадра (медиана по каналам) и подставляет его как цвет хромакея. */
-function detectChromaColor() {
-  const v = $('workVideo');
-  if (!state.video || !v.videoWidth) return false;
-  const w = 64;
-  const h = Math.max(8, Math.round((w * v.videoHeight) / v.videoWidth));
-  const c = document.createElement('canvas');
-  c.width = w;
-  c.height = h;
-  const ctx = c.getContext('2d', { willReadFrequently: true });
-  try {
-    ctx.drawImage(v, 0, 0, w, h);
-    const d = ctx.getImageData(0, 0, w, h).data;
-    const ch = [[], [], []];
-    const m = 3;
-    for (let y = 0; y < h; y++)
-      for (let x = 0; x < w; x++) {
-        if (x >= m && x < w - m && y >= m && y < h - m) continue;
-        const i = (y * w + x) * 4;
-        for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
-      }
-    const med = (a) => a.sort((p, q) => p - q)[a.length >> 1];
-    const hex = ch.map((a) => med(a).toString(16).padStart(2, '0')).join('');
-    applySetting('look.chroma.color', '#' + hex);
-    writeForm();
-    return true;
-  } catch {
-    return false;
-  }
-}
-$('chromaPick').addEventListener('click', () => {
-  if (!detectChromaColor()) toast('Сначала загрузите видео', true);
-});
-for (const el of document.querySelectorAll('[data-setting^="look.chroma."]')) {
-  if (el.type !== 'checkbox' && el.type !== 'radio') continue;
-  el.addEventListener('change', () => {
-    const c = state.settings.look.chroma;
-    onEngineChanged();
-    if (!c.enabled) return;
-    if (c.mode === 'color' && el.dataset.setting === 'look.chroma.mode') detectChromaColor();
-    if (c.mode === 'ai') {
-      toast('Загружаю нейросеть для удаления фона…');
-      loadSegmenter()
-        .then(() => schedulePlan())
-        .catch((e) => toast(e.message, true));
-    }
-  });
 }
 
 $('lenChips').addEventListener('click', (e) => {
@@ -721,6 +668,35 @@ $('linkInput').addEventListener('paste', () => setTimeout(() => ($('linkInput').
 // ------------------------------------------------------------ баннеры
 
 let bannerSeq = 0;
+/** Цвет фона видео по краям первого кадра (медиана по каналам) — для хромакея баннера. */
+async function detectEdgeColor(v) {
+  try {
+    await seekTo(v, Math.min(0.1, (v.duration || 1) / 2));
+    if (!v.videoWidth) return null;
+    const w = 64;
+    const h = Math.max(8, Math.round((w * v.videoHeight) / v.videoWidth));
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(v, 0, 0, w, h);
+    const d = ctx.getImageData(0, 0, w, h).data;
+    const ch = [[], [], []];
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        if (x >= 2 && x < w - 2 && y >= 2 && y < h - 2) continue;
+        const i = (y * w + x) * 4;
+        for (let k = 0; k < 3; k++) ch[k].push(d[i + k]);
+      }
+    const med = (a) => a.sort((p, q) => p - q)[a.length >> 1];
+    return '#' + ch.map((a) => med(a).toString(16).padStart(2, '0')).join('');
+  } catch {
+    return null;
+  } finally {
+    v.currentTime = 0;
+  }
+}
+
 async function addBanners(files) {
   if (engine.busy || state.renderCtl) return toast('Сначала остановите воспроизведение или рендер', true);
   for (const file of files) {
@@ -745,6 +721,7 @@ async function addBanners(files) {
         document.querySelector('.work-media').appendChild(v);
         await waitMeta(v);
         Object.assign(b, { el: v, width: v.videoWidth, height: v.videoHeight, duration: v.duration });
+        b.keyColor = await detectEdgeColor(v);
       }
       b.aspect = b.width / b.height || 16 / 9;
       state.banners.push(b);

@@ -28,6 +28,13 @@ export const DEFAULT_SETTINGS = Object.freeze({
     freezeBlur: 14, // размытие замершего кадра (0–40)
     freezeDim: 35, // затемнение замершего кадра, %
     tag: true,
+    chroma: {
+      enabled: false, // убрать зелёный фон у видеобаннеров (хромакей)
+      auto: true, // цвет фона определяется по краям кадра каждого баннера
+      color: '#00ff00', // цвет, который вырезаем
+      similarity: 30, // насколько близкие оттенки вырезать, 1–100
+      smooth: 10, // мягкость края, 0–100
+    },
     tagText: 'Реклама',
     progress: true,
     adAudio: true, // звук видеобаннера в режиме паузы
@@ -47,14 +54,6 @@ export const DEFAULT_SETTINGS = Object.freeze({
     endCard: true,
     endCardText: 'Продолжение в части {next} →',
     endCardDur: 3,
-    chroma: {
-      enabled: false, // убрать фон из ролика
-      mode: 'ai', // 'ai' — нейросеть выделяет человека; 'color' — вырезать однотонный цвет (зелёный экран)
-      color: '#00ff00', // цвет, который вырезаем
-      similarity: 30, // насколько близкие оттенки вырезать, 1–100
-      smooth: 10, // мягкость края, 0–100
-      bg: '#000000', // что показать вместо вырезанного фона
-    },
   },
   output: {
     fileName: '{name}_part{n}',
@@ -106,6 +105,14 @@ export function normalizeSettings(input) {
       freezeBlur: num(s.ads.freezeBlur, 0, 40, d.ads.freezeBlur),
       freezeDim: num(s.ads.freezeDim, 0, 90, d.ads.freezeDim),
       tag: bool(s.ads.tag, d.ads.tag),
+      chroma: {
+        // раньше хромакей был в «Оформлении» (для основного видео) — переносим включённый флажок сюда
+        enabled: bool(s.ads.chroma?.enabled, bool(s.look.chroma?.enabled, d.ads.chroma.enabled)),
+        auto: bool(s.ads.chroma?.auto, d.ads.chroma.auto),
+        color: safeHexColor(s.ads.chroma?.color, safeHexColor(s.look.chroma?.color, d.ads.chroma.color)),
+        similarity: num(s.ads.chroma?.similarity, 1, 100, num(s.look.chroma?.similarity, 1, 100, d.ads.chroma.similarity)),
+        smooth: num(s.ads.chroma?.smooth, 0, 100, num(s.look.chroma?.smooth, 0, 100, d.ads.chroma.smooth)),
+      },
       tagText: str(s.ads.tagText, d.ads.tagText, 40),
       progress: bool(s.ads.progress, d.ads.progress),
       adAudio: bool(s.ads.adAudio, d.ads.adAudio),
@@ -125,14 +132,6 @@ export function normalizeSettings(input) {
       endCard: bool(s.look.endCard, d.look.endCard),
       endCardText: str(s.look.endCardText, d.look.endCardText, 80),
       endCardDur: num(s.look.endCardDur, 1, 30, d.look.endCardDur),
-      chroma: {
-        enabled: bool(s.look.chroma?.enabled, d.look.chroma.enabled),
-        mode: ['ai', 'color'].includes(s.look.chroma?.mode) ? s.look.chroma.mode : d.look.chroma.mode,
-        color: safeHexColor(s.look.chroma?.color, d.look.chroma.color),
-        similarity: num(s.look.chroma?.similarity, 1, 100, d.look.chroma.similarity),
-        smooth: num(s.look.chroma?.smooth, 0, 100, d.look.chroma.smooth),
-        bg: safeHexColor(s.look.chroma?.bg, d.look.chroma.bg),
-      },
     },
     output: {
       fileName: str(s.output.fileName, d.output.fileName, 120),

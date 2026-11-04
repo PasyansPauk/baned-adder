@@ -4,7 +4,6 @@
 import { blurRadius, fadeDuration, fitRect, layerAnim } from './core/layout.js';
 import { orderLayers } from './core/layers.js';
 import { BITMAP_KINDS } from './graphics.js';
-import { loadSegmenter, personMask } from './segment.js';
 
 const nextFrame = () => new Promise((r) => requestAnimationFrame(() => r()));
 
@@ -59,9 +58,6 @@ export class BrowserEngine {
     this.freeze = document.createElement('canvas');
     this.tmp = document.createElement('canvas');
     this.key = document.createElement('canvas');
-    this.segIn = document.createElement('canvas');
-    this.segMask = document.createElement('canvas');
-    this.segmenter = null;
     this.audio = null;
     this.running = null;
   }
@@ -114,13 +110,9 @@ export class BrowserEngine {
     this.freeze.height = H;
   }
 
-  /** Хромакей: вырезаем цвет по расстоянию в плоскости Cb/Cr (как ffmpeg chromakey), кладём на сплошной фон. */
-  drawKeyed(ctx, sw, sh) {
-    const { W, H, video } = this;
-    const c = this.s.look.chroma;
-    const r = fitRect(this.s.look.fit === 'crop' ? 'crop' : 'pad', sw, sh, W, H);
-    ctx.fillStyle = c.bg;
-    ctx.fillRect(0, 0, W, H);
+  /** Хромакей видеобаннера: вырезаем цвет по расстоянию в плоскости Cb/Cr (как ffmpeg chromakey). */
+  drawKeyed(ctx, video, r, color) {
+    const c = this.s.ads.chroma;
     const kw = Math.max(2, Math.round(r.w));
     const kh = Math.max(2, Math.round(r.h));
     if (this.key.width !== kw || this.key.height !== kh) {
@@ -129,48 +121,14 @@ export class BrowserEngine {
       this.keyCtx = this.key.getContext('2d', { willReadFrequently: true });
     }
     const kctx = this.keyCtx || (this.keyCtx = this.key.getContext('2d', { willReadFrequently: true }));
-    if (c.mode === 'ai') {
-      // нейросеть: маска человека на уменьшенном кадре, затем растягиваем её на кадр (мягкий край)
-      kctx.globalCompositeOperation = 'copy';
-      kctx.drawImage(video, 0, 0, kw, kh);
-      if (!this.segmenter) {
-        kctx.globalCompositeOperation = 'source-over';
-        ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
-        return;
-      }
-      const sw2 = Math.min(512, kw);
-      const sh2 = Math.max(2, Math.round((sw2 * kh) / kw));
-      if (this.segIn.width !== sw2 || this.segIn.height !== sh2) {
-        this.segIn.width = sw2;
-        this.segIn.height = sh2;
-      }
-      this.segIn.getContext('2d').drawImage(video, 0, 0, sw2, sh2);
-      const cover = personMask(this.segmenter, this.segIn, this.segMask, { strength: c.similarity, smooth: c.smooth });
-      // человека в кадре нет (карточки, текст, заставки) — показываем кадр целиком;
-      // гистерезис, чтобы не мигало на границе
-      this.segHasPerson = this.segHasPerson ? cover > 0.035 : cover > 0.06;
-      if (!this.segHasPerson) {
-        ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
-        return;
-      }
-      kctx.globalCompositeOperation = 'destination-in';
-      kctx.imageSmoothingEnabled = true;
-      kctx.imageSmoothingQuality = 'high';
-      kctx.drawImage(this.segMask, 0, 0, kw, kh);
-      kctx.globalCompositeOperation = 'source-over';
-      ctx.drawImage(this.key, r.x, r.y, r.w, r.h);
-      return;
-    }
-    kctx.globalCompositeOperation = 'copy';
     kctx.drawImage(video, 0, 0, kw, kh);
-    kctx.globalCompositeOperation = 'source-over';
     const img = kctx.getImageData(0, 0, kw, kh);
     const d = img.data;
     const cb = (R, G, B) => -0.168736 * R - 0.331264 * G + 0.5 * B;
     const cr = (R, G, B) => 0.5 * R - 0.418688 * G - 0.081312 * B;
-    const kr = parseInt(c.color.slice(1, 3), 16);
-    const kg = parseInt(c.color.slice(3, 5), 16);
-    const kb = parseInt(c.color.slice(5, 7), 16);
+    const kr = parseInt(color.slice(1, 3), 16);
+    const kg = parseInt(color.slice(3, 5), 16);
+    const kb = parseInt(color.slice(5, 7), 16);
     const kcb = cb(kr, kg, kb);
     const kcr = cr(kr, kg, kb);
     const sim = Math.min(0.5, Math.max(0.01, c.similarity / 200));
@@ -195,12 +153,6 @@ export class BrowserEngine {
     const fit = this.s.look.fit;
     const sw = video.videoWidth || this.srcW;
     const sh = video.videoHeight || this.srcH;
-    if (this.s.look.chroma?.enabled) {
-      ctx.save();
-      this.drawKeyed(ctx, sw, sh);
-      ctx.restore();
-      return;
-    }
     ctx.save();
     ctx.globalAlpha = 1;
     ctx.imageSmoothingEnabled = true;
@@ -260,9 +212,14 @@ export class BrowserEngine {
         const bm = this.factory.get(layer, part);
         ctx.drawImage(bm.canvas, bm.x, bm.y + a.dy);
       } else if (layer.kind === 'adVideo') {
-        const el = this.banners[layer.banner]?.el;
+        const b = this.banners[layer.banner];
+        const el = b?.el;
         const r = this.factory.cardRect(layer.banner);
-        if (el && el.readyState >= 2) ctx.drawImage(el, r.x, r.y + a.dy, r.w, r.h);
+        if (el && el.readyState >= 2) {
+          const c = this.s.ads.chroma;
+          if (c?.enabled) this.drawKeyed(ctx, el, { x: r.x, y: r.y + a.dy, w: r.w, h: r.h }, (c.auto && b.keyColor) || c.color);
+          else ctx.drawImage(el, r.x, r.y + a.dy, r.w, r.h);
+        }
       } else if (layer.kind === 'progress') {
         const r = this.factory.progressRect(layer.banner);
         const p = Math.min(1, Math.max(0, (t - layer.start) / Math.max(0.01, layer.end - layer.start)));
@@ -275,15 +232,8 @@ export class BrowserEngine {
     }
   }
 
-  /** Если включено удаление фона нейросетью — дожидаемся загрузки модели. */
-  async ensureSegmenter() {
-    const c = this.s?.look?.chroma;
-    if (c?.enabled && c.mode === 'ai' && !this.segmenter) this.segmenter = await loadSegmenter();
-  }
-
   /** Статичный кадр части в момент outT (для обложки превью). */
   async drawStill(part, outT) {
-    await this.ensureSegmenter();
     const seg = part.segments.find((s) => outT >= s.outStart && outT <= s.outEnd) || part.segments[0];
     if (seg.type === 'content') {
       await seekTo(this.video, seg.srcStart + (outT - seg.outStart));
@@ -310,7 +260,6 @@ export class BrowserEngine {
    */
   async play(part, { record = false, fromOut = 0, onTime, monitor = true } = {}) {
     if (this.running) throw new Error('Уже идёт воспроизведение');
-    await this.ensureSegmenter();
     const run = { stopped: false };
     this.running = run;
     const fps = this.s.look.fps;

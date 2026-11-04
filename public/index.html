@@ -233,6 +233,23 @@
             <input type="text" id="tagText" data-setting="ads.tagText" maxlength="40">
           </div>
           <label class="switch"><input type="checkbox" data-setting="ads.progress"><span>Полоска-таймер под баннером</span></label>
+          <label class="switch"><input type="checkbox" data-setting="ads.chroma.enabled"><span>Убрать зелёный фон у видеобаннера</span></label>
+          <div class="dep" data-dep="ads.chroma.enabled">
+            <label class="switch"><input type="checkbox" data-setting="ads.chroma.auto"><span>Определять цвет фона автоматически</span></label>
+            <div class="field dep" data-dep="ads.chroma.auto=false">
+              <label for="chromaColor">Цвет фона, который убрать</label>
+              <input type="color" id="chromaColor" data-setting="ads.chroma.color">
+            </div>
+            <div class="field">
+              <label for="chromaSim">Сила вырезания: <output data-for="ads.chroma.similarity"></output></label>
+              <input type="range" id="chromaSim" min="1" max="100" step="1" data-setting="ads.chroma.similarity">
+            </div>
+            <div class="field">
+              <label for="chromaSmooth">Мягкость края: <output data-for="ads.chroma.smooth"></output></label>
+              <input type="range" id="chromaSmooth" min="0" max="100" step="1" data-setting="ads.chroma.smooth">
+            </div>
+            <small class="muted">Для видеобаннеров, снятых на зелёном фоне: фон становится прозрачным, и баннер лежит прямо поверх ролика. Если остаётся зелёная кайма — увеличьте силу; если пропадают части баннера — уменьшите.</small>
+          </div>
           <label class="switch dep" data-dep="ads.mode=pause"><input type="checkbox" data-setting="ads.adAudio"><span>Звук видеобаннера</span></label>
           <div class="field dep" data-dep="ads.mode=pause">
             <label for="audioFade">Плавность звука у паузы: <output data-for="ads.audioFade"></output> с</label>
@@ -275,34 +292,6 @@
         <div class="field">
           <label for="accent">Акцентный цвет</label>
           <input type="color" id="accent" data-setting="look.accent">
-        </div>
-        <label class="switch"><input type="checkbox" data-setting="look.chroma.enabled"><span>Убрать задний фон</span></label>
-        <div class="dep" data-dep="look.chroma.enabled">
-          <fieldset class="segmented" aria-label="Как убирать фон">
-            <label><input type="radio" name="chromaMode" value="ai" data-setting="look.chroma.mode"><span>Нейросеть (человек)</span></label>
-            <label><input type="radio" name="chromaMode" value="color" data-setting="look.chroma.mode"><span>Зелёный экран</span></label>
-          </fieldset>
-          <div class="grid-2">
-            <div class="field dep" data-dep="look.chroma.mode=color">
-              <label for="chromaColor">Цвет, который убрать</label>
-              <input type="color" id="chromaColor" data-setting="look.chroma.color">
-              <button type="button" class="btn btn-sm" id="chromaPick">Определить по краям кадра</button>
-            </div>
-            <div class="field">
-              <label for="chromaBg">Что показать вместо фона</label>
-              <input type="color" id="chromaBg" data-setting="look.chroma.bg">
-            </div>
-          </div>
-          <div class="field">
-            <label for="chromaSim">Сила вырезания: <output data-for="look.chroma.similarity"></output></label>
-            <input type="range" id="chromaSim" min="1" max="100" step="1" data-setting="look.chroma.similarity">
-          </div>
-          <div class="field">
-            <label for="chromaSmooth">Мягкость края: <output data-for="look.chroma.smooth"></output></label>
-            <input type="range" id="chromaSmooth" min="0" max="100" step="1" data-setting="look.chroma.smooth">
-          </div>
-          <small class="muted dep" data-dep="look.chroma.mode=ai">Нейросеть находит человека (или нарисованного персонажа) и убирает всё остальное. Кадры без человека — карточки, текст, заставки — остаются целиком. Работает в браузере: рендер идёт в реальном времени, даже если сервер с ffmpeg запущен. При первом включении нужен интернет.</small>
-          <small class="muted dep" data-dep="look.chroma.mode=color">Для роликов, снятых на зелёном или синем фоне. Если остаётся кайма — увеличьте силу; если пропадают части героя — уменьшите.</small>
         </div>
         <label class="switch"><input type="checkbox" data-setting="look.partLabel"><span>Номер части в начале</span></label>
         <div class="grid-2 dep" data-dep="look.partLabel">
