@@ -10,6 +10,7 @@ import {
   analyzeOnServer,
   buildServerSpecs,
   cancelJob,
+  fetchFromUrl,
   getServerStatus,
   pollJob,
   startRender,
@@ -225,6 +226,7 @@ async function detectServer() {
     badge.className = 'badge info';
     badge.title = 'Сервер не найден — всё делается прямо в браузере';
   }
+  updateLinkBox();
   $('phoneBtn').hidden = !(state.server?.lanUrls?.length && ['localhost', '127.0.0.1', '[::1]'].includes(location.hostname));
   const vt = state.server?.ffmpeg?.encoders?.videotoolbox;
   $('encoder').querySelector('[value="videotoolbox"]').disabled = !vt;
@@ -317,17 +319,26 @@ function waitMeta(el) {
   });
 }
 
+/**
+ * Открывает видео в редакторе.
+ * file — File с устройства или «удалённый» источник { remote: true, name, size, url, uploadId }:
+ * файл, который уже лежит на компьютере (скачан по ссылке) — его не надо загружать повторно.
+ */
 async function loadVideo(file) {
-  if (!file) return;
-  if (engine.busy || state.renderCtl) return toast('Сначала остановите воспроизведение или рендер', true);
+  if (!file) return false;
+  if (engine.busy || state.renderCtl) {
+    toast('Сначала остановите воспроизведение или рендер', true);
+    return false;
+  }
   stopAnalysis();
   const old = state.video;
   if (old) {
     old.uploadCtl?.abort();
-    URL.revokeObjectURL(old.url);
-    if (old.uploadId) fetch(`api/uploads/${old.uploadId}`, { method: 'DELETE' }).catch(() => {});
+    if (!old.file.remote) URL.revokeObjectURL(old.url);
+    // скачанное по ссылке не удаляем: его ещё можно сохранить в Загрузки (сервер сам почистит позже)
+    if (old.uploadId && !old.file.remote) fetch(`api/uploads/${old.uploadId}`, { method: 'DELETE' }).catch(() => {});
   }
-  const url = URL.createObjectURL(file);
+  const url = file.remote ? file.url : URL.createObjectURL(file);
   const work = $('workVideo');
   work.src = url;
   $('videoPreview').src = url;
@@ -335,9 +346,13 @@ async function loadVideo(file) {
     await waitMeta(work);
   } catch (e) {
     toast(e.message, true);
-    return;
+    return false;
   }
   state.video = { file, url, duration: work.duration, width: work.videoWidth, height: work.videoHeight };
+  if (file.remote) {
+    state.video.uploadId = file.uploadId;
+    state.video.uploadPromise = Promise.resolve(file.uploadId);
+  }
   state.analysis = null;
   state.selected = 0;
   clearResults();
@@ -345,13 +360,151 @@ async function loadVideo(file) {
   $('videoInfo').hidden = false;
   $('videoName').textContent = file.name;
   $('videoMeta').textContent = `${fmtTime(work.duration)} · ${work.videoWidth}×${work.videoHeight} · ${fmtSize(file.size)}`;
-  $('uploadState').textContent = '';
+  $('uploadState').textContent = file.remote ? '✓ Скачано по ссылке, видео на компьютере' : '';
   $('stageEmpty').hidden = true;
   await seekTo(work, Math.min(1, work.duration / 2));
   schedulePlan(0);
   if (activeEngine() === 'server') ensureSourceUploaded().catch(() => {});
   startAnalysis();
+  return true;
 }
+
+// ------------------------------------------------------------ скачивание по ссылке
+
+const link = { ctl: null, result: null };
+
+function linkAvailable() {
+  return !!(state.server?.ffmpeg?.available && state.server?.ytdlp?.available);
+}
+
+function updateLinkBox() {
+  const ok = linkAvailable();
+  const busy = !!link.ctl;
+  $('linkBox').classList.toggle('is-off', !ok);
+  $('linkEdit').disabled = !ok || busy;
+  $('linkSave').disabled = !ok || busy;
+  $('linkInput').disabled = busy;
+  $('linkCancel').hidden = !busy;
+  let hint;
+  if (!state.server) {
+    hint = 'Скачивание по ссылке работает, когда открыт сайт с вашего Mac (npm start). На Mac нужно установить: brew install yt-dlp ffmpeg';
+  } else if (!state.server.ffmpeg?.available) {
+    hint = 'Для скачивания по ссылке установите на компьютере ffmpeg: brew install ffmpeg';
+  } else if (!state.server.ytdlp?.available) {
+    hint = 'Для скачивания по ссылке установите на компьютере yt-dlp: brew install yt-dlp — затем обновите страницу.';
+  } else {
+    hint = 'Видео скачивается на ваш компьютер (до 1080p, MP4). Скачивайте только то, на что у вас есть права: своё видео или с разрешения автора.';
+  }
+  $('linkHint').textContent = hint;
+}
+
+/** Достаёт ссылку из текста: в TikTok «Поделиться → Копировать» добавляет лишний текст вокруг. */
+function extractUrl(text) {
+  const m = String(text || '').match(/https?:\/\/[^\s"'<>]+/i);
+  return m ? m[0].replace(/[),.;!?]+$/, '') : String(text || '').trim();
+}
+
+if (navigator.clipboard?.readText && window.isSecureContext) {
+  $('linkPaste').hidden = false;
+  $('linkPaste').addEventListener('click', async () => {
+    try {
+      const t = await navigator.clipboard.readText();
+      $('linkInput').value = extractUrl(t);
+      $('linkInput').focus();
+    } catch {
+      toast('Нет доступа к буферу обмена — вставьте ссылку вручную', true);
+    }
+  });
+}
+
+function saveToDownloads(url, name) {
+  const a = document.createElement('a');
+  a.href = `${url}?download=1`;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function renderLinkResult(r, { edited }) {
+  const box = $('linkResult');
+  box.hidden = false;
+  box.innerHTML = `<div class="grow"><b class="ellipsis" style="display:block">${esc(r.title || r.name)}</b>
+      <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)} · ${fmtTime(r.info?.duration || 0)}</span></div>
+    <div class="row gap-s wrap">
+      ${edited ? '' : '<button type="button" class="btn btn-sm btn-primary" data-act="edit">Открыть в редакторе</button>'}
+      <a class="btn btn-sm" href="${r.url}?download=1" download="${esc(r.name)}">Сохранить в Загрузки</a>
+      ${navigator.share ? '<button type="button" class="btn btn-sm" data-act="share">Поделиться / в Фото</button>' : ''}
+    </div>`;
+  box.querySelector('[data-act="edit"]')?.addEventListener('click', async () => {
+    if (await openDownloaded(r)) renderLinkResult(r, { edited: true });
+  });
+  box.querySelector('[data-act="share"]')?.addEventListener('click', (e) => shareResult(r, e.target));
+}
+
+function openDownloaded(r) {
+  return loadVideo({ remote: true, name: r.name, size: r.size, url: r.url, uploadId: r.uploadId });
+}
+
+async function downloadByLink(mode) {
+  const url = extractUrl($('linkInput').value);
+  $('linkInput').value = url;
+  if (!url) {
+    $('linkInput').focus();
+    return toast('Вставьте ссылку на видео YouTube или TikTok', true);
+  }
+  if (!/^https?:\/\/([^/]+\.)?(youtube\.com|youtu\.be|youtube-nocookie\.com|tiktok\.com)(\/|$)/i.test(url)) {
+    return toast('Нужна ссылка на YouTube или TikTok, например https://www.tiktok.com/@user/video/123…', true);
+  }
+  if (mode === 'edit' && (engine.busy || state.renderCtl)) return toast('Сначала остановите воспроизведение или рендер', true);
+  const ctl = new AbortController();
+  link.ctl = ctl;
+  updateLinkBox();
+  $('linkResult').hidden = true;
+  const st = $('linkState');
+  const bar = $('linkProgress');
+  st.textContent = 'Отправляю ссылку на компьютер…';
+  setProgress(bar, 0);
+  try {
+    const r = await fetchFromUrl(url, {
+      signal: ctl.signal,
+      onProgress: (p, msg) => {
+        setProgress(bar, p);
+        st.textContent = `${msg || 'Скачиваю…'} ${Math.round(p * 100)}%`;
+      },
+    });
+    link.result = r;
+    st.textContent = `✓ Скачано: ${r.title || r.name}`;
+    if (mode === 'save' || state.settings.output.alsoSaveDownloaded) saveToDownloads(r.url, r.name);
+    let edited = false;
+    if (mode === 'edit') {
+      st.textContent = '✓ Скачано, открываю в редакторе…';
+      edited = await openDownloaded(r);
+      st.textContent = edited ? `✓ Открыто в редакторе: ${r.title || r.name}` : `✓ Скачано: ${r.title || r.name}`;
+      if (edited) toast('Видео скачано и открыто');
+    } else toast('Видео скачано — смотрите в Загрузках');
+    renderLinkResult(r, { edited });
+    $('linkInput').value = '';
+  } catch (e) {
+    st.textContent = isAbort(e) || e.message === 'Отменено' ? 'Скачивание отменено.' : e.message;
+    if (!isAbort(e)) toast('Не получилось скачать видео', true);
+  } finally {
+    link.ctl = null;
+    setProgress(bar, null);
+    updateLinkBox();
+  }
+}
+
+$('linkEdit').addEventListener('click', () => downloadByLink('edit'));
+$('linkSave').addEventListener('click', () => downloadByLink('save'));
+$('linkCancel').addEventListener('click', () => link.ctl?.abort());
+$('linkInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    if (!$('linkEdit').disabled) downloadByLink('edit');
+  }
+});
+$('linkInput').addEventListener('paste', () => setTimeout(() => ($('linkInput').value = extractUrl($('linkInput').value)), 0));
 
 // ------------------------------------------------------------ баннеры
 
@@ -449,7 +602,13 @@ async function startAnalysis() {
     } else {
       st.textContent = 'Ищу паузы в речи и смены сцен…';
       setProgress(bar, 0);
-      result = await analyzeInBrowser(v.file, v.url, v.duration, {
+      let file = v.file;
+      if (file.remote) {
+        st.textContent = 'Получаю видео с компьютера для анализа…';
+        const blob = await (await fetch(file.url, { signal: ctl.signal })).blob();
+        file = new File([blob], file.name, { type: blob.type || 'video/mp4' });
+      }
+      result = await analyzeInBrowser(file, v.url, v.duration, {
         signal: ctl.signal,
         onProgress: (p, label) => {
           setProgress(bar, p);
@@ -969,6 +1128,7 @@ $('phoneBtn').addEventListener('click', () => {
 writeForm();
 renderPresets();
 updateButtons();
+updateLinkBox();
 detectServer();
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {

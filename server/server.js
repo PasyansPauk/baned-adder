@@ -13,6 +13,7 @@ import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { pipeline } from 'node:stream/promises';
 import { analyze, detectFfmpeg, probe, renderPart } from './media.js';
+import { checkVideoUrl, detectYtDlp, downloadVideo } from './downloader.js';
 import { sanitizeFileName } from '../public/js/core/util.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -26,6 +27,7 @@ const KEEP_HOURS = Number(process.env.KEEP_HOURS) || 24;
 const MAX_UPLOAD = (Number(process.env.MAX_UPLOAD_GB) || 20) * 1024 ** 3;
 
 const ffmpeg = detectFfmpeg();
+let ytdlp = detectYtDlp();
 const jobs = new Map();
 const renderQueue = [];
 let rendering = false;
@@ -126,6 +128,40 @@ async function runAnalysis(job, file) {
   } catch (e) {
     job.status = job.controller.signal.aborted ? 'canceled' : 'error';
     job.error = e.message;
+  }
+}
+
+async function runDownload(job, url) {
+  job.status = 'running';
+  const dir = path.join(JOBS_DIR, job.id);
+  try {
+    const r = await downloadVideo(url, dir, {
+      signal: job.controller.signal,
+      onProgress: (p, msg) => {
+        job.progress = p;
+        if (msg) job.message = msg;
+      },
+    });
+    const st = await fsp.stat(r.file);
+    // файл сразу доступен как исходник для анализа и рендера — повторно грузить не нужно
+    const uploadId = newId();
+    uploads.set(uploadId, { path: r.file, name: r.name, size: st.size, created: Date.now(), info: r.info });
+    job.result = {
+      uploadId,
+      name: r.name,
+      title: r.title,
+      site: r.site,
+      size: st.size,
+      info: r.info,
+      url: `/api/files/${job.id}/${encodeURIComponent(r.name)}`,
+    };
+    job.progress = 1;
+    job.status = 'done';
+    job.message = 'Готово';
+  } catch (e) {
+    job.status = job.controller.signal.aborted ? 'canceled' : 'error';
+    job.error = job.controller.signal.aborted ? 'Отменено' : e.message;
+    await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -240,7 +276,12 @@ async function serveFile(req, res, file, { download = false, name } = {}) {
     'X-Content-Type-Options': 'nosniff',
     'Cache-Control': file.startsWith(PUBLIC) ? 'no-cache' : 'no-store',
   };
-  if (download) headers['Content-Disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name || path.basename(file))}`;
+  if (download) {
+    const n = name || path.basename(file);
+    const ascii = n.replace(/[^\x20-\x7e]/g, '_').replace(/["\\]/g, '_');
+    const star = encodeURIComponent(n).replace(/['()*]/g, (c) => '%' + c.charCodeAt(0).toString(16).toUpperCase());
+    headers['Content-Disposition'] = `attachment; filename="${ascii}"; filename*=UTF-8''${star}`;
+  }
   // Range нужен Safari/iPhone для воспроизведения видео
   const range = req.headers.range && /^bytes=(\d*)-(\d*)$/.exec(req.headers.range);
   if (range) {
@@ -267,9 +308,11 @@ async function route(req, res) {
 
   if (p.startsWith('/api/')) {
     if (p === '/api/status' && req.method === 'GET') {
+      if (!ytdlp.available) ytdlp = detectYtDlp(); // вдруг поставили после запуска сервера
       return send(res, 200, {
         app: 'baned-adder',
         ffmpeg,
+        ytdlp,
         lanUrls: lanUrls(),
         platform: process.platform,
       });
@@ -293,6 +336,16 @@ async function route(req, res) {
       const file = uploadPath(body.id);
       const job = createJob('analyze');
       runAnalysis(job, file);
+      return send(res, 200, { jobId: job.id });
+    }
+    if (p === '/api/fetch' && req.method === 'POST') {
+      const body = await readJson(req, 64 * 1024);
+      if (!ytdlp.available) ytdlp = detectYtDlp();
+      if (!ytdlp.available) return send(res, 503, { error: 'На компьютере не установлен yt-dlp. Выполните в Терминале: brew install yt-dlp' });
+      const check = checkVideoUrl(body.url);
+      if (!check.ok) return send(res, 400, { error: check.error });
+      const job = createJob('download', { site: check.site });
+      runDownload(job, check.url);
       return send(res, 200, { jobId: job.id });
     }
     if (p === '/api/render' && req.method === 'POST') {
@@ -399,6 +452,11 @@ server.listen(PORT, HOST, () => {
       ? `  ffmpeg ${ffmpeg.version}: быстрый рендер включён` +
           (ffmpeg.encoders?.videotoolbox ? ' (+ аппаратный VideoToolbox)' : '')
       : '  ffmpeg не найден — доступен только рендер в браузере.\n  Установите: brew install ffmpeg'
+  );
+  console.log(
+    ytdlp.available
+      ? `  yt-dlp ${ytdlp.version}: скачивание по ссылкам YouTube/TikTok включено`
+      : '  yt-dlp не найден — скачивание по ссылкам выключено.\n  Установите: brew install yt-dlp'
   );
   console.log(`  Временные файлы: ${WORKSPACE} (удаляются через ${KEEP_HOURS} ч)`);
   console.log(`  Остановить: Ctrl+C\n${line}\n`);

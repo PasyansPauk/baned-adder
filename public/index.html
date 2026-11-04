@@ -52,6 +52,27 @@
             </div>
           </div>
         </div>
+
+        <div class="link-box" id="linkBox">
+          <div class="divider"><span>или по ссылке</span></div>
+          <div class="field">
+            <label for="linkInput">Ссылка на видео YouTube или TikTok</label>
+            <div class="row gap-s">
+              <input type="url" id="linkInput" inputmode="url" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="https://www.tiktok.com/@…/video/…" aria-describedby="linkHint">
+              <button type="button" class="btn" id="linkPaste" hidden>Вставить</button>
+            </div>
+          </div>
+          <div class="row gap-s wrap">
+            <button type="button" class="btn btn-primary" id="linkEdit">Скачать и редактировать</button>
+            <button type="button" class="btn" id="linkSave">Только скачать в Загрузки</button>
+            <button type="button" class="btn btn-ghost" id="linkCancel" hidden>Отменить</button>
+          </div>
+          <label class="switch"><input type="checkbox" data-setting="output.alsoSaveDownloaded"><span>При редактировании тоже сохранять оригинал в Загрузки</span></label>
+          <div id="linkState" class="small" aria-live="polite"></div>
+          <div class="progress" id="linkProgress" hidden><i></i></div>
+          <div id="linkResult" class="link-result" hidden></div>
+          <p class="muted small" id="linkHint"></p>
+        </div>
       </section>
 
       <!-- 2. Баннеры -->

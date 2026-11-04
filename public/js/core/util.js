@@ -59,7 +59,10 @@ export function mulberry32(seed) {
 export function sanitizeFileName(name, fallback = 'video') {
   const cleaned = String(name ?? '')
     .replace(/\.[a-z0-9]{2,4}$/i, '')
-    .replace(/[\\/:*?"<>|\u0000-\u001f]+/g, '_')
+    // эмодзи и спецсимволы ломают имена файлов в браузерах и ссылках — убираем
+    .replace(/[\p{Extended_Pictographic}\u200d\ufe0f]/gu, '')
+    .replace(/[’‘`]/g, "'")
+    .replace(/[\\/:*?"<>|#%&{}$!@+=^~;,'\[\]\u0000-\u001f]+/g, '_')
     .replace(/\s+/g, '_')
     .replace(/_+/g, '_')
     .replace(/^[._]+|[._]+$/g, '')
