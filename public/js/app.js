@@ -26,6 +26,7 @@ const PRESETS_KEY = 'banedAdder.presets.v1';
 const state = {
   settings: loadSettings(),
   server: null, // статус локального сервера
+  seriesTitle: null, // режим «одна серия»: название, введённое пользователем (null — как у первого видео)
   videos: [], // все загруженные видео: { id, file, url, duration, width, height, uploadId, uploadPromise, analysis, analysisNote }
   video: null, // активное видео (его план и превью показаны)
   banners: [], // { id, file, name, kind, url, el, width, height, aspect, duration, uploadId }
@@ -1370,7 +1371,10 @@ async function renderInBrowser(parts, ctl, st, bar) {
  * а если видео режется на несколько частей, нумерация продолжается со следующего номера.
  * Возвращает Map: id видео → { offset, total }.
  */
+const isSeries = () => state.videos.length > 1 && state.settings.output.series === 'one';
+
 function seriesInfo() {
+  if (!isSeries()) return new Map();
   const banners = state.banners.map((b) => ({ kind: b.kind, duration: b.duration }));
   const counts = state.videos.map((v) => {
     const analysis = v === state.video ? state.analysis : v.analysis;
@@ -1398,8 +1402,37 @@ function planFor(v, series = seriesInfo()) {
   });
 }
 
+/** Название серии: своё, если пользователь его ввёл, иначе — название первого видео. */
+const seriesTitle = () => state.seriesTitle ?? state.videos[0]?.title ?? '';
+
 function captionText(v, p) {
-  return fillTemplate(state.settings.output.caption, { title: v.title, n: p.num, total: p.seriesTotal, next: p.num + 1, prev: p.num - 1 });
+  const title = isSeries() ? seriesTitle() : v.title;
+  return fillTemplate(state.settings.output.caption, { title, n: p.num, total: p.seriesTotal, next: p.num + 1, prev: p.num - 1 });
+}
+
+const copyBtn = (p) => `<button type="button" class="btn btn-sm" data-copy aria-label="Скопировать подпись части ${p.num}">Копировать</button>`;
+
+/** Режим «одна серия»: одно название и единый список подписей всех частей всех видео. */
+function seriesCaptionsHtml(series) {
+  let pending = false;
+  const items = state.videos
+    .flatMap((v, vi) => {
+      if (!v.analysis) pending = true;
+      return planFor(v, series).parts.map(
+        (p) => `<li><div><div class="grow"><span class="caption-part-src muted ellipsis">Видео ${vi + 1} · ${esc(v.file.name)}</span>
+          <pre>${esc(captionText(v, p))}</pre></div>${copyBtn(p)}</div></li>`
+      );
+    });
+  return `<section class="caption-video">
+      <div class="field">
+        <label for="seriesTitleInput">Название серии — одно для всех видео</label>
+        <input type="text" id="seriesTitleInput" data-series-title value="${esc(seriesTitle())}" placeholder="Например: Как я переехал в Сочи">
+      </div>
+      <p class="muted small">Всего частей в серии: <b>${items.length}</b></p>
+      <ol class="caption-list">${items.join('')}</ol>
+      ${pending ? '<p class="muted small">Число частей уточнится после поиска пауз.</p>' : ''}
+      <button type="button" class="btn btn-sm" data-copy-all>Копировать все подписи серии (${items.length})</button>
+    </section>`;
 }
 
 /** Подписи: для каждого видео своё название и подпись к каждой его части. */
@@ -1408,15 +1441,16 @@ function renderCaptions() {
   const multi = state.videos.length > 1;
   // если пользователь сейчас печатает название — вернём ему фокус и курсор после перерисовки
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
-  const keep = focused?.dataset.videoTitle ? { id: focused.id, a: focused.selectionStart, b: focused.selectionEnd } : null;
+  const keep = focused && (focused.dataset.videoTitle || focused.dataset.seriesTitle !== undefined) ? { id: focused.id, a: focused.selectionStart, b: focused.selectionEnd } : null;
   const series = seriesInfo();
-  box.innerHTML = state.videos
+  if (isSeries()) box.innerHTML = seriesCaptionsHtml(series);
+  else box.innerHTML = state.videos
     .map((v, vi) => {
       const parts = planFor(v, series).parts;
       const items = parts
         .map(
           (p) => `<li><div><pre>${esc(captionText(v, p))}</pre>
-            <button type="button" class="btn btn-sm" data-copy aria-label="Скопировать подпись части ${p.num}">Копировать</button></div></li>`
+            ${copyBtn(p)}</div></li>`
         )
         .join('');
       const head = multi ? `<div class="caption-head"><b>Видео ${vi + 1}</b> <span class="muted small ellipsis">${esc(v.file.name)}</span></div>` : '';
@@ -1456,6 +1490,14 @@ async function copyText(text) {
 }
 
 $('captionList').addEventListener('input', (e) => {
+  if (e.target.dataset?.seriesTitle !== undefined) {
+    state.seriesTitle = e.target.value;
+    // обновляем тексты без перерисовки — поле ввода не теряет фокус
+    const series = seriesInfo();
+    const all = state.videos.flatMap((v) => planFor(v, series).parts.map((p) => captionText(v, p)));
+    e.target.closest('.caption-video').querySelectorAll('pre').forEach((pre, i) => all[i] !== undefined && (pre.textContent = all[i]));
+    return;
+  }
   const id = e.target.dataset?.videoTitle;
   if (!id) return;
   const v = state.videos.find((x) => String(x.id) === id);

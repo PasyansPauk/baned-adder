@@ -58,6 +58,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
   output: {
     fileName: '{name}_part{n}',
     title: '',
+    series: 'one', // несколько видео: one — одна серия (общий текст, нумерация подряд), separate — разные видео
     caption: '{title} — часть {n}/{total} 🔥\n#часть{n} #сериал #fyp',
     engine: 'auto', // auto | server | browser
     encoder: 'x264', // x264 | videotoolbox
@@ -137,6 +138,7 @@ export function normalizeSettings(input) {
       fileName: str(s.output.fileName, d.output.fileName, 120),
       title: str(s.output.title, d.output.title, 200),
       caption: str(s.output.caption, d.output.caption, 2000),
+      series: pick(s.output.series, ['one', 'separate'], d.output.series),
       engine: pick(s.output.engine, ['auto', 'server', 'browser'], d.output.engine),
       encoder: pick(s.output.encoder, ['x264', 'videotoolbox'], d.output.encoder),
       quality: pick(s.output.quality, ['high', 'medium', 'small'], d.output.quality),

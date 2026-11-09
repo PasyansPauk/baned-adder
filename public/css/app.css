@@ -286,6 +286,11 @@ details.sub summary { cursor: pointer; padding: 8px 0; font-weight: 600; list-st
 }
 .result-item .grow { flex: 1 1 160px; min-width: 0; }
 .result-item video { width: 100%; max-height: 50vh; border-radius: var(--radius-s); background: #000; }
+.series-mode { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px 10px; margin: 12px 0 0; display: flex; flex-direction: column; gap: 8px; }
+.series-mode legend { padding: 0 4px; font-size: 13px; color: var(--muted, inherit); }
+.series-mode .radio { display: flex; gap: 8px; align-items: flex-start; cursor: pointer; }
+.series-mode .radio input { margin-top: 3px; }
+.caption-part-src { display: block; font-size: 12px; margin-bottom: 2px; }
 .caption-video { border-top: 1px solid var(--border); padding-top: 12px; margin-top: 14px; }
 .caption-video:first-child { border-top: 0; margin-top: 4px; padding-top: 0; }
 .caption-head { display: flex; gap: 8px; align-items: baseline; min-width: 0; margin-bottom: 6px; }

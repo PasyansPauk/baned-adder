@@ -57,6 +57,11 @@
         <div id="videoListBox" hidden>
           <p class="muted small">Видео в работе. Каждое режется на свои части с теми же баннерами и настройками. Нажмите на видео, чтобы посмотреть его план и превью.</p>
           <ul id="videoList" class="video-list"></ul>
+          <fieldset class="series-mode">
+            <legend>Как считать эти видео</legend>
+            <label class="radio"><input type="radio" name="seriesMode" value="one" data-setting="output.series"><span><b>Одна серия</b> — общий текст для всех, части нумеруются подряд: 1/6, 2/6 … 6/6</span></label>
+            <label class="radio"><input type="radio" name="seriesMode" value="separate" data-setting="output.series"><span><b>Разные видео</b> — у каждого своё название и свой текст, нумерация частей у каждого своя</span></label>
+          </fieldset>
         </div>
 
         <div class="link-box" id="linkBox">
@@ -421,7 +426,7 @@
         <div class="field">
           <label for="caption">Шаблон подписи — общий для всех видео</label>
           <textarea id="caption" rows="3" data-setting="output.caption" aria-describedby="captionHint"></textarea>
-          <small class="muted" id="captionHint">{title} — название видео (задаётся ниже для каждого), {n} — номер части, {total} — всего частей, {prev}/{next} — соседние части</small>
+          <small class="muted" id="captionHint">{title} — название (ниже: одно на серию или своё у каждого видео), {n} — номер части, {total} — всего частей, {prev}/{next} — соседние части</small>
         </div>
         <div id="captionList"></div>
       </section>
