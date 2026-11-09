@@ -166,7 +166,12 @@ function srcToOut(segments, t) {
  * @param {object} p.settings — настройки (будут нормализованы)
  * @param {{kind:'image'|'video', duration?:number}[]} p.banners
  */
-export function buildPlan({ duration, analysis, settings, banners = [] }) {
+/**
+ * series — сквозная нумерация, когда видео несколько: { offset, total }.
+ * offset — сколько частей у видео перед этим, total — сколько частей во всей серии.
+ * Тогда части второго видео получают номера после частей первого («Часть 4/6»), а не начинают снова с 1.
+ */
+export function buildPlan({ duration, analysis, settings, banners = [], series = null }) {
   const s = normalizeSettings(settings);
   const fps = s.look.fps;
   const q = (t) => Math.round(t * fps) / fps;
@@ -183,6 +188,8 @@ export function buildPlan({ duration, analysis, settings, banners = [] }) {
 
   const ranges = splitRanges(D, cands, s.split, adTime, q, warnings);
   const total = ranges.length;
+  const offset = Math.max(0, series?.offset || 0);
+  const seriesTotal = Math.max(series?.total || 0, offset + total);
   const rand = mulberry32(1337);
   let adCounter = 0;
   const nextBanner = () => {
@@ -228,10 +235,11 @@ export function buildPlan({ duration, analysis, settings, banners = [] }) {
       out = q(out + (range.srcEnd - cur));
     }
     const partDur = out;
-    const vars = { n: index + 1, total, prev: index, next: index + 2 };
+    const num = offset + index + 1; // номер части во всей серии
+    const vars = { n: num, total: seriesTotal, prev: num - 1, next: num + 1 };
     const animDur = s.ads.animDur;
 
-    if (s.look.partLabel && total > 1) {
+    if (s.look.partLabel && seriesTotal > 1) {
       const end = s.look.partLabelDur > 0 ? Math.min(s.look.partLabelDur, partDur) : partDur;
       layers.push({ kind: 'partLabel', text: fillTemplate(s.look.partLabelText, vars), start: 0, end, anim: 'fade', animDur: 0.35 });
     }
@@ -239,7 +247,7 @@ export function buildPlan({ duration, analysis, settings, banners = [] }) {
     if (s.look.recapLabel && recapLen >= 1.5) {
       layers.push({ kind: 'recapLabel', text: fillTemplate(s.look.recapLabelText, vars), start: 0, end: recapLen, anim: 'fade', animDur: 0.35 });
     }
-    if (s.look.endCard && index < total - 1) {
+    if (s.look.endCard && num < seriesTotal) {
       const d = Math.min(s.look.endCardDur, partDur / 3);
       layers.push({ kind: 'endCard', text: fillTemplate(s.look.endCardText, vars), start: q(partDur - d), end: partDur, anim: 'slide', animDur: 0.35 });
     }
@@ -254,6 +262,8 @@ export function buildPlan({ duration, analysis, settings, banners = [] }) {
     return {
       index,
       total,
+      num,
+      seriesTotal,
       srcStart: range.srcStart,
       newStart: range.newStart,
       srcEnd: range.srcEnd,

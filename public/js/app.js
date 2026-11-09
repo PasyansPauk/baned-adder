@@ -470,7 +470,10 @@ async function removeVideo(v) {
     const next = state.videos[Math.min(at, state.videos.length - 1)];
     if (next) await activateVideo(next);
     else resetVideoUi();
-  } else renderVideoList();
+  } else {
+    renderVideoList();
+    schedulePlan(0);
+  }
 }
 
 function resetVideoUi() {
@@ -887,8 +890,12 @@ async function runAnalysis(v, ctl) {
     if (!state.videos.includes(v)) return;
     v.analysis = result;
     v.analysisNote = `Найдено пауз: ${result.silences.length}, смен сцен: ${result.scenes.length}.` + (result.note ? ` ${result.note}` : '');
-    renderCaptions();
-    if (!ui()) return;
+    if (!ui()) {
+      // число частей этого видео уточнилось — сдвигается нумерация следующих видео
+      if (state.renderCtl || batchRun) renderCaptions();
+      else schedulePlan(0);
+      return;
+    }
     state.analysis = result;
     st.textContent = v.analysisNote;
     schedulePlan(0);
@@ -930,6 +937,7 @@ function rebuildPlan() {
     analysis: state.analysis,
     settings: s,
     banners: state.banners.map((b) => ({ kind: b.kind, duration: b.duration })),
+    series: seriesInfo().get(state.video.id),
   });
   const { W, H } = outputSize(s.look, state.video.width, state.video.height);
   state.W = W;
@@ -976,17 +984,17 @@ function renderPlan() {
       const ads = p.ads.length ? `реклама: ${p.ads.map((a) => fmtTime(a.outStart)).join(', ')}` : 'без рекламы';
       const recap = p.recapLen > 0 ? ` · повтор ${Math.round(p.recapLen)} с` : '';
       return `<li class="part-item${i === state.selected ? ' is-selected' : ''}" data-part="${i}">
-        <div class="grow"><b>Часть ${i + 1}</b> · ${fmtTime(p.duration)}
+        <div class="grow"><b>Часть ${p.num}</b> · ${fmtTime(p.duration)}
           <div class="muted small">из исходника ${fmtTime(p.srcStart)}–${fmtTime(p.srcEnd)}${recap} · ${ads}</div></div>
         <div class="row gap-s">
-          <button type="button" class="btn btn-sm" data-act="preview" data-part="${i}" aria-label="Смотреть часть ${i + 1}">▶ Смотреть</button>
-          <button type="button" class="btn btn-sm" data-act="render" data-part="${i}" aria-label="Создать только часть ${i + 1}">Создать</button>
+          <button type="button" class="btn btn-sm" data-act="preview" data-part="${i}" aria-label="Смотреть часть ${p.num}">▶ Смотреть</button>
+          <button type="button" class="btn btn-sm" data-act="render" data-part="${i}" aria-label="Создать только часть ${p.num}">Создать</button>
         </div></li>`;
     })
     .join('');
 
   const sel = $('previewPart');
-  sel.innerHTML = parts.map((p, i) => `<option value="${i}">Часть ${i + 1} · ${fmtTime(p.duration)}</option>`).join('');
+  sel.innerHTML = parts.map((p, i) => `<option value="${i}">Часть ${p.num} · ${fmtTime(p.duration)}</option>`).join('');
   sel.value = String(state.selected);
 }
 
@@ -1091,12 +1099,13 @@ function updateButtons() {
 
 function fileNameFor(part) {
   const base = state.video ? sanitizeFileName(state.video.file.name) : 'video';
-  return sanitizeFileName(fillTemplate(state.settings.output.fileName, { name: base, n: part.index + 1, total: part.total }), `part${part.index + 1}`);
+  return sanitizeFileName(fillTemplate(state.settings.output.fileName, { name: base, n: part.num, total: part.seriesTotal }), `part${part.num}`);
 }
 
 function addResult(r) {
   const v = state.video;
   r.videoId = v?.id;
+  r.num ??= state.plan?.parts.find((p) => p.index === r.index)?.num ?? r.index + 1;
   state.results = state.results.filter((x) => !(x.videoId === r.videoId && x.index === r.index));
   state.results.push(r);
   renderResults();
@@ -1115,7 +1124,7 @@ function renderResults() {
     const href = r.objectUrl || r.url;
     const dl = r.objectUrl ? href : `${href}?download=1`;
     const multi = state.videos.length > 1;
-    li.innerHTML = `<div class="grow"><b>${multi ? `Видео ${videoNo(r)} · ` : ''}Часть ${r.index + 1}</b> <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)}</span></div>
+    li.innerHTML = `<div class="grow"><b>${multi ? `Видео ${videoNo(r)} · ` : ''}Часть ${r.num}</b> <span class="muted small">${esc(r.name)} · ${fmtSize(r.size)}</span></div>
       <div class="row gap-s wrap">
         <button type="button" class="btn btn-sm" data-act="watch">Смотреть</button>
         <a class="btn btn-sm" href="${dl}" download="${esc(r.name)}">Скачать</a>
@@ -1190,6 +1199,13 @@ $('renderEvery').addEventListener('click', async () => {
   const list = [...state.videos];
   let ok = 0;
   try {
+    // сначала узнаём число частей у всех видео — иначе сквозные номера «Часть 4/6» могут не совпасть
+    for (const [i, v] of list.entries()) {
+      if (run.cancelled) break;
+      if (v.analysis || v.analysisSkip) continue;
+      $('renderState').textContent = `Ищу паузы во всех видео: ${i + 1} из ${list.length}…`;
+      await analyzeVideo(v).catch(() => {});
+    }
     for (const [i, v] of list.entries()) {
       if (run.cancelled || !state.videos.includes(v)) continue;
       $('renderState').textContent = `Видео ${i + 1} из ${list.length}: ${v.file.name} — готовлю план…`;
@@ -1330,7 +1346,7 @@ async function renderInBrowser(parts, ctl, st, bar) {
   for (const [k, part] of parts.entries()) {
     if (ctl.signal.aborted) throw new DOMException('Отменено', 'AbortError');
     selectPart(part.index, { still: false });
-    st.textContent = `${batchPrefix()}Запись части ${part.index + 1} (${k + 1} из ${parts.length}) — не блокируйте экран`;
+    st.textContent = `${batchPrefix()}Запись части ${part.num} (${k + 1} из ${parts.length}) — не блокируйте экран`;
     const blob = await engine.play(part, {
       record: true,
       monitor: state.settings.output.monitorAudio,
@@ -1349,19 +1365,41 @@ async function renderInBrowser(parts, ctl, st, bar) {
 
 // ------------------------------------------------------------ подписи
 
+/**
+ * Сквозная нумерация частей по всем видео: 6 видео подряд — это части 1…6 одной серии,
+ * а если видео режется на несколько частей, нумерация продолжается со следующего номера.
+ * Возвращает Map: id видео → { offset, total }.
+ */
+function seriesInfo() {
+  const banners = state.banners.map((b) => ({ kind: b.kind, duration: b.duration }));
+  const counts = state.videos.map((v) => {
+    const analysis = v === state.video ? state.analysis : v.analysis;
+    return buildPlan({ duration: v.duration, analysis, settings: state.settings, banners }).parts.length;
+  });
+  const total = counts.reduce((a, c) => a + c, 0);
+  const out = new Map();
+  let offset = 0;
+  state.videos.forEach((v, i) => {
+    out.set(v.id, { offset, total });
+    offset += counts[i];
+  });
+  return out;
+}
+
 /** План видео: у активного — текущий, у остальных считается по их анализу (быстро, без превью). */
-function planFor(v) {
+function planFor(v, series = seriesInfo()) {
   if (v === state.video && state.plan) return state.plan;
   return buildPlan({
     duration: v.duration,
     analysis: v.analysis,
     settings: state.settings,
     banners: state.banners.map((b) => ({ kind: b.kind, duration: b.duration })),
+    series: series.get(v.id),
   });
 }
 
-function captionText(v, p, i) {
-  return fillTemplate(state.settings.output.caption, { title: v.title, n: i + 1, total: p.total, next: i + 2, prev: i });
+function captionText(v, p) {
+  return fillTemplate(state.settings.output.caption, { title: v.title, n: p.num, total: p.seriesTotal, next: p.num + 1, prev: p.num - 1 });
 }
 
 /** Подписи: для каждого видео своё название и подпись к каждой его части. */
@@ -1371,13 +1409,14 @@ function renderCaptions() {
   // если пользователь сейчас печатает название — вернём ему фокус и курсор после перерисовки
   const focused = box.contains(document.activeElement) ? document.activeElement : null;
   const keep = focused?.dataset.videoTitle ? { id: focused.id, a: focused.selectionStart, b: focused.selectionEnd } : null;
+  const series = seriesInfo();
   box.innerHTML = state.videos
     .map((v, vi) => {
-      const parts = planFor(v).parts;
+      const parts = planFor(v, series).parts;
       const items = parts
         .map(
-          (p, i) => `<li><div><pre>${esc(captionText(v, p, i))}</pre>
-            <button type="button" class="btn btn-sm" data-copy aria-label="Скопировать подпись части ${i + 1}">Копировать</button></div></li>`
+          (p) => `<li><div><pre>${esc(captionText(v, p))}</pre>
+            <button type="button" class="btn btn-sm" data-copy aria-label="Скопировать подпись части ${p.num}">Копировать</button></div></li>`
         )
         .join('');
       const head = multi ? `<div class="caption-head"><b>Видео ${vi + 1}</b> <span class="muted small ellipsis">${esc(v.file.name)}</span></div>` : '';
@@ -1424,7 +1463,7 @@ $('captionList').addEventListener('input', (e) => {
   v.title = e.target.value;
   // обновляем только тексты этого видео — поле ввода не теряет фокус
   const parts = planFor(v).parts;
-  e.target.closest('.caption-video').querySelectorAll('pre').forEach((pre, i) => parts[i] && (pre.textContent = captionText(v, parts[i], i)));
+  e.target.closest('.caption-video').querySelectorAll('pre').forEach((pre, i) => parts[i] && (pre.textContent = captionText(v, parts[i])));
 });
 
 $('captionList').addEventListener('click', async (e) => {

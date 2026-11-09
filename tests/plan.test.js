@@ -135,3 +135,27 @@ test('нормализация отбрасывает мусор', () => {
   assert.equal(s.look.aspect, '9:16');
   assert.equal(s.ads.mode, 'pause');
 });
+
+test('несколько видео: сквозная нумерация частей по всей серии', () => {
+  const settings = { look: { partLabel: true, endCard: true }, output: {} };
+  // 6 коротких видео — 6 частей одной серии
+  const plans = Array.from({ length: 6 }, (_, i) => buildPlan({ duration: 60, settings, banners: [], series: { offset: i, total: 6 } }));
+  plans.forEach((p, i) => {
+    assert.equal(p.parts.length, 1);
+    assert.equal(p.parts[0].num, i + 1);
+    assert.equal(p.parts[0].seriesTotal, 6);
+    const label = p.parts[0].layers.find((l) => l.kind === 'partLabel');
+    assert.ok(label, 'надпись «Часть n/6» есть даже у видео из одной части');
+    assert.match(label.text, new RegExp(`${i + 1}/6`));
+    // «Продолжение в следующей части» — у всех, кроме последней части серии
+    assert.equal(!!p.parts[0].layers.find((l) => l.kind === 'endCard'), i < 5);
+  });
+});
+
+test('без серии нумерация как раньше', () => {
+  const p = buildPlan({ duration: 600, settings: { split: { targetLen: 120, smart: false } }, banners: [] });
+  p.parts.forEach((part, i) => {
+    assert.equal(part.num, i + 1);
+    assert.equal(part.seriesTotal, p.parts.length);
+  });
+});
